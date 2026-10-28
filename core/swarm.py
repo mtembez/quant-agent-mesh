@@ -7,6 +7,7 @@ import numpy as np
 from agents.alpha_agent import AlphaHypothesisAgent
 from agents.backtest_agent import VectorizedBacktestAgent
 from agents.regime_agent import RegimeDetectionAgent
+from analytics.pairs import StatisticalArbitrageEngine
 from core.data_feed import extract_ohlcv_arrays, generate_synthetic_gbm
 from core.models import BacktestResult, MarketRegime, OrderSide, RiskMetrics
 from execution.engine import PaperExecutionEngine
@@ -22,10 +23,35 @@ class QuantSwarmCoordinator:
         self.backtest_agent = VectorizedBacktestAgent(initial_capital=initial_capital)
         self.risk_governor = RiskGovernorAgent()
         self.execution_engine = PaperExecutionEngine(initial_capital=initial_capital)
+        self.pairs_engine = StatisticalArbitrageEngine()
 
         self.strategy_registry: Dict[str, BacktestResult] = {}
         self.latest_regime: MarketRegime = MarketRegime.MEAN_REVERTING
         self.latest_risk: Optional[RiskMetrics] = None
+
+    def analyze_pairs_trading(self, symbol_a: str = "BTC/USD", symbol_b: str = "ETH/USD", n_bars: int = 300) -> Dict[str, Any]:
+        """Perform dynamic Kalman hedge ratio and Ornstein-Uhlenbeck pairs analysis."""
+        candles_a = generate_synthetic_gbm(initial_price=100.0, n_bars=n_bars, mu=0.05, sigma=0.20)
+        prices_a = extract_ohlcv_arrays(candles_a)["close"]
+
+        # Synthetic cointegrated pair: P_B = 0.5 * P_A + stationary noise
+        np.random.seed(42)
+        noise = np.random.normal(0, 1.5, n_bars)
+        prices_b = (0.5 * prices_a) + noise
+
+        pair_result = self.pairs_engine.analyze_pair(symbol_a, symbol_b, prices_a, prices_b)
+        # Vectorized backtest on spread signals
+        backtest_res = self.backtest_agent.run_backtest(
+            strategy_name=f"Pairs O-U ({symbol_a}/{symbol_b})",
+            symbol=f"{symbol_a}-{symbol_b}",
+            prices=prices_a,
+            signals=np.array(pair_result.signals, dtype=np.int8),
+        )
+
+        return {
+            "pairs_analysis": pair_result.model_dump(mode="json"),
+            "backtest": backtest_res.model_dump(mode="json"),
+        }
 
     def run_full_research_cycle(self, symbol: str = "BTC/USD", n_bars: int = 350) -> Dict[str, Any]:
         """Execute complete autonomous quantitative research, backtesting, and risk governance workflow."""

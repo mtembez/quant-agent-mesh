@@ -132,6 +132,19 @@ async def submit_order_endpoint(request: Request):
     return JSONResponse(order.model_dump(mode="json"))
 
 
+async def analyze_pairs_endpoint(request: Request):
+    """Run dynamic Kalman hedge ratio and Ornstein-Uhlenbeck pairs analysis."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    symbol_a = body.get("symbol_a", "BTC/USD")
+    symbol_b = body.get("symbol_b", "ETH/USD")
+    n_bars = int(body.get("n_bars", 300))
+    res = coordinator.analyze_pairs_trading(symbol_a, symbol_b, n_bars)
+    return JSONResponse(res)
+
+
 async def get_portfolio_endpoint(request: Request):
     """Retrieve marked-to-market portfolio balance and open positions."""
     return JSONResponse(coordinator.execution_engine.portfolio.model_dump(mode="json"))
@@ -161,6 +174,7 @@ routes = [
     Route("/api/v1/strategies", list_strategies, methods=["GET"]),
     Route("/api/v1/research", trigger_research_cycle, methods=["POST"]),
     Route("/api/v1/backtest", execute_backtest_endpoint, methods=["POST"]),
+    Route("/api/v1/pairs/analyze", analyze_pairs_endpoint, methods=["POST"]),
     Route("/api/v1/orders", submit_order_endpoint, methods=["POST"]),
     Route("/api/v1/portfolio", get_portfolio_endpoint, methods=["GET"]),
     WebSocketRoute("/ws/market-feed", websocket_market_feed),
