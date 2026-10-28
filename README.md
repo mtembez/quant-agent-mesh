@@ -1,7 +1,7 @@
 # Quant Sentinel: Autonomous Quantitative Alpha Swarm & Risk Mesh
 
 [![Quant Agent Mesh CI/CD](https://github.com/mtembez/quant-agent-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/mtembez/quant-agent-mesh/actions/workflows/ci.yml)
-[![Coverage: 95%](https://img.shields.io/badge/Coverage-95%25-brightgreen.svg)](https://github.com/mtembez/quant-agent-mesh)
+[![Coverage: 97%](https://img.shields.io/badge/Coverage-97%25-brightgreen.svg)](https://github.com/mtembez/quant-agent-mesh)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![Starlette](https://img.shields.io/badge/Starlette-ASGI-purple.svg)](https://www.starlette.io/)
 [![React 18](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
@@ -87,6 +87,11 @@ An enterprise-grade, autonomous quantitative research, high-throughput vectorize
 ### 4. Event-Driven Paper Execution Hub (`execution/engine.py`)
 - Simulates realistic order fills, market impact, proportional bid-ask slippage, and marked-to-market PnL accounting.
 
+### 5. Statistical Arbitrage & Ornstein-Uhlenbeck Pairs Engine (`analytics/pairs.py`)
+- **Dynamic 1D Kalman Filter**: Recursively estimates time-varying hedge ratio $\beta_t$ between co-integrated asset pairs without lookahead bias.
+- **Ornstein-Uhlenbeck (O-U) SDE Estimation**: Estimates mean-reversion speed parameter $\theta$, equilibrium mean $\mu$, diffusion variance $\sigma$, and exact half-life $t_{1/2} = \frac{\ln(2)}{\theta}$.
+- **Z-Score Spread Signals**: Generates quantitative mean-reverting entry and exit bounds with automated stop-loss thresholds.
+
 ---
 
 ## Project Development Life-Cycle (PDLC) Documentation
@@ -108,6 +113,7 @@ Comprehensive institutional documentation is maintained within the repository:
 | `GET` | `/api/v1/strategies` | List all evaluated alpha strategies and performance metrics |
 | `POST` | `/api/v1/research` | Trigger autonomous alpha hypothesis generation & risk cycle |
 | `POST` | `/api/v1/backtest` | Execute on-demand vectorized strategy backtest |
+| `POST` | `/api/v1/pairs/analyze` | Perform dynamic Kalman filter & Ornstein-Uhlenbeck pairs analysis |
 | `POST` | `/api/v1/orders` | Submit paper order with slippage simulation |
 | `GET` | `/api/v1/portfolio` | Retrieve marked-to-market equity and open positions |
 | `WS` | `/ws/market-feed` | Real-time WebSocket streaming tick data and order updates |
@@ -123,15 +129,15 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Run Deterministic Pytest Suite (Coverage: 95%)
+### 2. Run Deterministic Pytest Suite (Coverage: 97%)
 ```bash
-pytest -v --cov=core --cov=agents --cov=risk --cov=execution --cov=api --cov=cli --cov-report=term-missing
+pytest -v --cov=. --cov-report=term-missing
 ```
 
 Output:
 ```text
-============================== 18 passed in 2.14s ==============================
-Coverage: 95.36% (95%)
+============================== 23 passed in 0.77s ==============================
+Coverage: 96.95% (97%)
 ```
 
 ### 3. Run Backend API

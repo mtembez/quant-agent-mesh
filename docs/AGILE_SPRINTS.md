@@ -47,3 +47,10 @@ This project follows strict Agile Scrum mechanics with 2-week Sprint increments.
 - **US-6.1**: Expand pytest test suite to cover all edge cases with $\ge 85\%$ coverage.
 - **US-6.2**: Configure GitHub Actions workflow with modern Node 24 runtime and Python 3.13.
 - **US-6.3**: Tag `v1.0.0` and publish official GitHub Release.
+
+### Sprint 7: Statistical Arbitrage, Dynamic Kalman Filter & Ornstein-Uhlenbeck Pairs Engine
+- **US-7.1**: Implement `DynamicKalmanFilter` in `analytics/pairs.py` to recursively estimate time-varying hedge ratio $\beta_t$ between pairs.
+- **US-7.2**: Implement `OrnsteinUhlenbeckEstimator` in `analytics/pairs.py` calculating mean-reversion speed $\theta$, long-term equilibrium $\mu$, volatility $\sigma$, and exact half-life $t_{1/2}$.
+- **US-7.3**: Expose `/api/v1/pairs/analyze` in Starlette ASGI backend and add `pairs` command in CLI.
+- **US-7.4**: Build Statistical Arbitrage & Pairs Trading console tab in React 18 dashboard.
+- **US-7.5**: Achieve 97% unit/integration test coverage with 23 passing tests and release `v1.1.0`.
