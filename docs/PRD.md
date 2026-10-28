@@ -29,17 +29,28 @@ Traditional quantitative research suffers from:
 
 ---
 
-## 5. Functional Requirements (FR)
-* **FR-1: Market Data Ingestion & Tick Generation**: Ingest historical and simulated multi-asset OHLCV and tick time series.
+## 5. Primary Asset Universe & Market Assumptions
+The platform must support multi-asset class modeling with distinct volatility and precision regimes:
+1. **Digital Assets (Crypto)**:
+   * `BTC/USD`, `ETH/USD`, `SOL/USD`: 24/7 continuous trading, high idiosyncratic volatility ($\sigma \sim 50\% - 80\%$), fractional base asset precision (up to 8 decimal places).
+2. **Commodities**:
+   * `XAU/USD` (Gold vs. US Dollar): Macro safe-haven inflation hedge, continuous price discovery, 2 decimal places precision, price range ~$2,000–$3,500/oz.
+3. **Foreign Exchange (Macro FX)**:
+   * `JPY/USD` (and inverse `USD/JPY`): High-liquidity sovereign currency pair, carry-trade and interest-rate differential sensitivity, lower annualized volatility ($\sigma \sim 8\% - 14\%$), pip precision (2 decimal places for JPY cross rates, 4–5 for standard FX).
+
+---
+
+## 6. Functional Requirements (FR)
+* **FR-1: Multi-Asset Market Data Ingestion & Tick Generation**: Ingest historical and simulated multi-asset OHLCV and tick time series covering Crypto (`BTC/USD`, `ETH/USD`), Commodities (`XAU/USD`), and Macro FX (`JPY/USD`).
 * **FR-2: Market Regime Detection**: Compute rolling annualized volatility, Hurst exponents, and Augmented Dickey-Fuller (ADF) stationarity indicators.
 * **FR-3: Alpha Hypothesis Engine**: Autonomous generation of parameterizable trading strategies (Bollinger Mean-Reversion, EMA Trend Cross, RSI Momentum, Statistical Pairs Spread).
 * **FR-4: Vectorized Backtesting Engine**: Deterministic calculation of total return, CAGR, annualized Sharpe ratio, Sortino ratio, maximum drawdown (MDD), and Calmar ratio.
 * **FR-5: Monte Carlo Risk Governor**: Run 1,000+ simulated asset price trajectories under Brownian motion to evaluate tail-risk distributions and maximum portfolio loss under stress.
-* **FR-6: Event-Driven Paper Execution Simulator**: Simulated order matching engine supporting market and limit orders with proportional slippage and transaction cost modeling.
+* **FR-6: Event-Driven Paper Execution Simulator**: Simulated order matching engine supporting market and limit orders with proportional slippage and transaction cost modeling across asset classes.
 
 ---
 
-## 6. Non-Functional Requirements (NFR)
+## 7. Non-Functional Requirements (NFR)
 * **NFR-1 (Latency)**: Vectorized backtesting of a 5,000-candle series must execute in $< 50\,\text{ms}$.
 * **NFR-2 (Reliability & Quality)**: Test coverage $\ge 85\%$ across all mathematical modules with zero compiler/linter warnings.
 * **NFR-3 (Type Safety & Validation)**: 100% strict Pydantic v2 schemas for all financial payloads, orders, and telemetry.
