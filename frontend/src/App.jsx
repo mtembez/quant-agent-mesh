@@ -25,6 +25,11 @@ export default function App() {
   const [orderQty, setOrderQty] = useState(1.0);
   const [orderSide, setOrderSide] = useState('BUY');
 
+  // Pairs Trading inputs
+  const [pairsAssetA, setPairsAssetA] = useState('BTC/USD');
+  const [pairsAssetB, setPairsAssetB] = useState('ETH/USD');
+  const [pairsResult, setPairsResult] = useState(null);
+
   useEffect(() => {
     fetchPortfolio();
     fetchStrategies();
@@ -95,6 +100,28 @@ export default function App() {
       }
     } catch (e) {
       setStatusMessage('Backtest request failed');
+    }
+  };
+
+  const runPairsAnalysis = async () => {
+    setStatusMessage(`Running Kalman Filter & Ornstein-Uhlenbeck Pairs Analysis for ${pairsAssetA} vs ${pairsAssetB}...`);
+    try {
+      const res = await fetch('/api/v1/pairs/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol_a: pairsAssetA,
+          symbol_b: pairsAssetB,
+          n_bars: 300,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPairsResult(data);
+        setStatusMessage(`Pairs Analysis Complete -> Kalman Beta: ${data.pairs_analysis.hedge_ratio_beta} | O-U Half-Life: ${data.pairs_analysis.ou_half_life_days} days`);
+      }
+    } catch (e) {
+      setStatusMessage('Pairs analysis request failed');
     }
   };
 
@@ -175,6 +202,7 @@ export default function App() {
         {[
           { id: 'leaderboard', label: '🏆 Alpha Hypothesis Leaderboard' },
           { id: 'lab', label: '🔬 Vectorized Backtest Lab' },
+          { id: 'pairs', label: '⚖️ Statistical Arbitrage (Pairs)' },
           { id: 'execution', label: '📈 Paper Order Hub' },
           { id: 'metrics', label: '📊 Prometheus Metrics', onClick: fetchMetrics },
         ].map((tab) => (
@@ -324,6 +352,77 @@ export default function App() {
               </div>
             ) : (
               <p style={{ color: '#94a3b8', fontSize: '13px' }}>Configure parameters and click "Run Zero-Loop Matrix Backtest" to view analytics.</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Tab: Statistical Arbitrage & Pairs Trading */}
+      {activeTab === 'pairs' && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
+          <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>⚖️ Cointegrated Asset Pair</h2>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
+              <div>
+                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Asset A:</label>
+                <input
+                  type="text"
+                  value={pairsAssetA}
+                  onChange={(e) => setPairsAssetA(e.target.value)}
+                  style={{ width: '100%', padding: '8px', background: '#1f2937', color: 'white', border: '1px solid #374151', borderRadius: '4px', marginTop: '4px' }}
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Asset B:</label>
+                <input
+                  type="text"
+                  value={pairsAssetB}
+                  onChange={(e) => setPairsAssetB(e.target.value)}
+                  style={{ width: '100%', padding: '8px', background: '#1f2937', color: 'white', border: '1px solid #374151', borderRadius: '4px', marginTop: '4px' }}
+                />
+              </div>
+              <button
+                onClick={runPairsAnalysis}
+                style={{ padding: '10px', background: '#059669', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+              >
+                Run Kalman & O-U Analysis
+              </button>
+            </div>
+          </div>
+
+          <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📊 Mean-Reversion Parameters & Backtest</h2>
+            {pairsResult ? (
+              <div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginTop: '14px' }}>
+                  <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>Kalman Hedge Beta (β)</div>
+                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#38bdf8' }}>{pairsResult.pairs_analysis.hedge_ratio_beta}</div>
+                  </div>
+                  <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>O-U Half-Life</div>
+                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#10b981' }}>{pairsResult.pairs_analysis.ou_half_life_days} days</div>
+                  </div>
+                  <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>Current Z-Score</div>
+                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: Math.abs(pairsResult.pairs_analysis.current_z_score) > 2.0 ? '#ef4444' : '#10b981' }}>
+                      {pairsResult.pairs_analysis.current_z_score}σ
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ marginTop: '16px', background: '#1f2937', padding: '14px', borderRadius: '6px' }}>
+                  <h3 style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#38bdf8' }}>Spread Backtest Performance</h3>
+                  <div style={{ display: 'flex', gap: '20px', fontSize: '13px' }}>
+                    <div>Total Return: <strong style={{ color: '#10b981' }}>{pairsResult.backtest.total_return_pct}%</strong></div>
+                    <div>Annualized Sharpe: <strong style={{ color: '#38bdf8' }}>{pairsResult.backtest.annualized_sharpe}</strong></div>
+                    <div>Max Drawdown: <strong style={{ color: '#ef4444' }}>{pairsResult.backtest.max_drawdown_pct}%</strong></div>
+                    <div>Trades: <strong>{pairsResult.backtest.total_trades}</strong></div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p style={{ color: '#94a3b8', fontSize: '13px' }}>Click "Run Kalman & O-U Analysis" to estimate dynamic hedge ratio and mean-reversion metrics.</p>
             )}
           </div>
         </div>
