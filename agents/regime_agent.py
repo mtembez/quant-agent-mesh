@@ -17,8 +17,6 @@ class RegimeDetectionAgent:
             return MarketRegime.MEAN_REVERTING
 
         returns = compute_log_returns(close_prices)
-        if len(returns) == 0:
-            return MarketRegime.MEAN_REVERTING
 
         # Annualized volatility
         ann_vol = float(np.std(returns) * np.sqrt(252))
