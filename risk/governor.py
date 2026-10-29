@@ -1,7 +1,7 @@
 """Monte Carlo Risk Governor and Value-at-Risk (VaR) monitoring agent."""
 
 import math
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 import numpy as np
 
 from core.math import (
@@ -80,6 +80,7 @@ class RiskGovernorAgent:
         portfolio_value: float,
         weights: Dict[str, float],
         prices_dict: Dict[str, np.ndarray],
+        run_monte_carlo: bool = False,
     ) -> RiskMetrics:
         """Evaluate joint multi-asset portfolio Value-at-Risk and covariance risk metrics."""
         if portfolio_value <= 0 or not weights or not prices_dict:
@@ -136,23 +137,129 @@ class RiskGovernorAgent:
         var_pct = (p_var_95 / portfolio_value) * 100.0
         is_breached = bool(var_pct > self.max_var_limit_pct)
 
+        details_dict: Dict[str, Any] = {
+            "symbols": symbols,
+            "weights": {s: round(float(w), 4) for s, w in zip(symbols, w_vec)},
+            "covariance_matrix": cov_matrix.tolist(),
+            "portfolio_daily_volatility": round(float(port_vol), 6),
+            "var_pct_of_portfolio": round(float(var_pct), 2),
+            "max_var_limit_pct": self.max_var_limit_pct,
+        }
+
+        # Run Cholesky-correlated multi-asset Monte Carlo if requested
+        worst_loss_pct = round(var_pct * 1.5, 2)
+        if run_monte_carlo:
+            curr_prices = {s: float(prices_dict[s][-1]) for s in symbols}
+            # Approximate quantities from notional weights: qty_i = (portfolio_value * w_i) / P_i
+            quantities = {s: (portfolio_value * weights.get(s, 0.0)) / max(1e-9, curr_prices[s]) for s in symbols}
+            cash = max(0.0, portfolio_value * (1.0 - sum(weights.values())))
+
+            mc = self.run_multivariate_monte_carlo(
+                current_cash=cash,
+                quantities=quantities,
+                current_prices=curr_prices,
+                cov_matrix=cov_matrix,
+                symbols=symbols,
+            )
+            details_dict["monte_carlo"] = mc
+            worst_loss_pct = mc.get("worst_loss_pct", worst_loss_pct)
+            if mc.get("circuit_breaker_tripped", False):
+                is_breached = True
+
         return RiskMetrics(
             portfolio_value=portfolio_value,
             parametric_var_95=p_var_95,
             parametric_var_99=p_var_99,
             historical_var_95=round(p_var_95 * 0.95, 2),
             conditional_var_95=round(p_var_95 * 1.15, 2),
-            max_simulated_loss_pct=round(var_pct * 1.5, 2),
+            max_simulated_loss_pct=worst_loss_pct,
             is_risk_breached=is_breached,
-            details={
-                "symbols": symbols,
-                "weights": {s: round(float(w), 4) for s, w in zip(symbols, w_vec)},
-                "covariance_matrix": cov_matrix.tolist(),
-                "portfolio_daily_volatility": round(float(port_vol), 6),
-                "var_pct_of_portfolio": round(float(var_pct), 2),
-                "max_var_limit_pct": self.max_var_limit_pct,
-            },
+            details=details_dict,
         )
+
+    def run_multivariate_monte_carlo(
+        self,
+        current_cash: float,
+        quantities: Dict[str, float],
+        current_prices: Dict[str, float],
+        cov_matrix: np.ndarray,
+        symbols: List[str],
+        n_simulations: int = 1000,
+        horizon_days: int = 30,
+        seed: int = 42,
+    ) -> Dict[str, Any]:
+        """Run multivariate Monte Carlo simulation preserving cross-asset correlations via Cholesky factorization."""
+        np.random.seed(seed)
+        k = len(symbols)
+        if k == 0:
+            return {}
+
+        cov = np.asarray(cov_matrix, dtype=np.float64)
+        if cov.shape != (k, k):
+            cov = np.eye(k, dtype=np.float64) * 0.0004
+
+        # Guarantee positive-definiteness for Cholesky decomposition
+        eigs = np.linalg.eigvalsh(cov)
+        if (eigs <= 1e-8).any():
+            cov = cov + (1e-6 * np.eye(k, dtype=np.float64))
+
+        L = np.linalg.cholesky(cov)
+
+        initial_equity = float(current_cash + sum(quantities.get(s, 0.0) * current_prices.get(s, 0.0) for s in symbols))
+        initial_p = np.array([current_prices[s] for s in symbols], dtype=np.float64)
+        q_vec = np.array([quantities.get(s, 0.0) for s in symbols], dtype=np.float64)
+        diag_vars = np.diag(cov)
+
+        # Correlated Brownian shocks: Z_corr = Z_uncorr @ L^T
+        z_uncorr = np.random.standard_normal((n_simulations, horizon_days, k))
+        z_corr = np.matmul(z_uncorr, L.T)
+
+        # Multi-asset price paths under Geometric Brownian Motion
+        log_steps = (-0.5 * diag_vars) + z_corr
+        cum_log_steps = np.cumsum(log_steps, axis=1)
+        sim_prices = initial_p * np.exp(cum_log_steps)
+
+        # Portfolio equity trajectory
+        sim_equities = current_cash + np.dot(sim_prices, q_vec)
+        terminal_equities = sim_equities[:, -1]
+
+        # Max drawdown across paths
+        full_equities = np.column_stack([np.full(n_simulations, initial_equity), sim_equities])
+        running_max = np.maximum.accumulate(full_equities, axis=1)
+        drawdowns = (running_max - full_equities) / np.maximum(running_max, 1e-9)
+        max_dds_per_sim = np.max(drawdowns, axis=1)
+        worst_loss_pct = float(np.max(max_dds_per_sim) * 100.0)
+
+        # Tail percentiles
+        p5_equity = float(np.percentile(terminal_equities, 5.0))
+        p1_equity = float(np.percentile(terminal_equities, 1.0))
+        sim_var_95 = max(0.0, float(initial_equity - p5_equity))
+        sim_var_99 = max(0.0, float(initial_equity - p1_equity))
+
+        var_pct = (sim_var_95 / max(1e-9, initial_equity)) * 100.0
+        circuit_breaker = bool(
+            worst_loss_pct >= self.max_drawdown_limit_pct
+            or var_pct >= self.max_var_limit_pct
+        )
+
+        terminal_prices_dict = {
+            symbols[j]: sim_prices[:, -1, j].tolist() for j in range(k)
+        }
+
+        return {
+            "n_simulations": n_simulations,
+            "horizon_days": horizon_days,
+            "initial_portfolio_value": round(initial_equity, 2),
+            "expected_terminal_equity": round(float(np.mean(terminal_equities)), 2),
+            "median_terminal_equity": round(float(np.median(terminal_equities)), 2),
+            "percentile_5_terminal_equity": round(p5_equity, 2),
+            "percentile_1_terminal_equity": round(p1_equity, 2),
+            "simulated_var_95": round(sim_var_95, 2),
+            "simulated_var_99": round(sim_var_99, 2),
+            "worst_loss_pct": round(worst_loss_pct, 2),
+            "circuit_breaker_tripped": circuit_breaker,
+            "terminal_asset_prices": terminal_prices_dict,
+        }
 
     def run_monte_carlo_stress_test(
         self,
