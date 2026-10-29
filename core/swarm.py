@@ -8,7 +8,7 @@ from agents.alpha_agent import AlphaHypothesisAgent
 from agents.backtest_agent import VectorizedBacktestAgent
 from agents.regime_agent import RegimeDetectionAgent
 from analytics.pairs import StatisticalArbitrageEngine
-from core.data_feed import extract_ohlcv_arrays, generate_synthetic_gbm
+from core.data_feed import extract_ohlcv_arrays, generate_multi_asset_feed, generate_synthetic_gbm
 from core.models import BacktestResult, MarketRegime, OrderSide, RiskMetrics
 from execution.engine import PaperExecutionEngine
 from risk.governor import RiskGovernorAgent
@@ -44,6 +44,35 @@ class QuantSwarmCoordinator:
         backtest_res = self.backtest_agent.run_backtest(
             strategy_name=f"Pairs O-U ({symbol_a}/{symbol_b})",
             symbol=f"{symbol_a}-{symbol_b}",
+            prices=prices_a,
+            signals=np.array(pair_result.signals, dtype=np.int8),
+        )
+
+        return {
+            "pairs_analysis": pair_result.model_dump(mode="json"),
+            "backtest": backtest_res.model_dump(mode="json"),
+        }
+
+    def analyze_cross_asset_arbitrage(self, pair_name: str = "XAU-JPY", n_bars: int = 300) -> Dict[str, Any]:
+        """Perform cross-asset pairs arbitrage using log-price spreads on multi-asset feeds."""
+        pair_mapping = {
+            "XAU-JPY": ("XAU/USD", "JPY/USD"),
+            "BTC-XAU": ("BTC/USD", "XAU/USD"),
+            "BTC-ETH": ("BTC/USD", "ETH/USD"),
+        }
+        sym_a, sym_b = pair_mapping.get(pair_name, ("XAU/USD", "JPY/USD"))
+
+        multi_feed = generate_multi_asset_feed(symbols=[sym_a, sym_b], n_bars=n_bars, seed=42)
+        prices_a = extract_ohlcv_arrays(multi_feed[sym_a])["close"]
+        prices_b = extract_ohlcv_arrays(multi_feed[sym_b])["close"]
+
+        pair_result = self.pairs_engine.analyze_pair(
+            sym_a, sym_b, prices_a, prices_b, use_log_prices=True
+        )
+
+        backtest_res = self.backtest_agent.run_backtest(
+            strategy_name=f"Cross-Asset O-U ({pair_name})",
+            symbol=f"{sym_a}-{sym_b}",
             prices=prices_a,
             signals=np.array(pair_result.signals, dtype=np.int8),
         )

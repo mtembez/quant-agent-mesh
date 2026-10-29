@@ -15,6 +15,7 @@ class PairsAnalysisResult(BaseModel):
     ou_half_life_days: float
     current_spread: float
     current_z_score: float
+    is_log_spread: bool = False
     spread_series: List[float] = Field(default_factory=list)
     z_score_series: List[float] = Field(default_factory=list)
     signals: List[int] = Field(default_factory=list)
@@ -100,21 +101,30 @@ class StatisticalArbitrageEngine:
         prices_b: np.ndarray,
         z_threshold_entry: float = 2.0,
         z_threshold_exit: float = 0.5,
+        use_log_prices: bool = False,
     ) -> PairsAnalysisResult:
         """Calculate dynamic hedge ratio, O-U parameters, Z-score spread, and trading signals."""
         n = min(len(prices_a), len(prices_b))
         prices_a = prices_a[:n]
         prices_b = prices_b[:n]
 
+        # Use log-prices if specified to handle disparate asset scales (e.g., Gold $2700 vs JPY $0.0065)
+        if use_log_prices:
+            work_a = np.log(np.maximum(1e-9, prices_a))
+            work_b = np.log(np.maximum(1e-9, prices_b))
+        else:
+            work_a = prices_a
+            work_b = prices_b
+
         # Calculate time-varying Kalman hedge ratio
         kalman = DynamicKalmanFilter()
         betas = np.zeros(n, dtype=np.float64)
         for i in range(n):
-            betas[i] = kalman.update(prices_a[i], prices_b[i])
+            betas[i] = kalman.update(work_a[i], work_b[i])
 
         final_beta = float(betas[-1])
-        # Compute spread: S_t = P_{A,t} - beta * P_{B,t}
-        spread = prices_a - (final_beta * prices_b)
+        # Compute spread: S_t = work_a - beta * work_b
+        spread = work_a - (final_beta * work_b)
 
         # Estimate Ornstein-Uhlenbeck parameters
         theta, mu, sigma, half_life_days = self.ou_estimator.estimate_parameters(spread)
@@ -150,6 +160,7 @@ class StatisticalArbitrageEngine:
             ou_half_life_days=half_life_days,
             current_spread=round(float(spread[-1]), 4),
             current_z_score=round(float(z_scores[-1]), 4),
+            is_log_spread=use_log_prices,
             spread_series=[round(float(x), 4) for x in spread.tolist()],
             z_score_series=[round(float(z), 4) for z in z_scores.tolist()],
             signals=[int(s) for s in signals.tolist()],
