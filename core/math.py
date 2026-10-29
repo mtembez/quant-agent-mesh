@@ -103,3 +103,47 @@ def compute_conditional_var(portfolio_value: float, returns: np.ndarray, confide
     expected_tail_return = float(np.mean(tail_losses))
     cvar = -portfolio_value * expected_tail_return if expected_tail_return < 0 else 0.0
     return round(float(cvar), 2)
+
+
+def compute_covariance_matrix(returns_matrix: np.ndarray, ridge_epsilon: float = 1e-8) -> np.ndarray:
+    """Compute empirical sample covariance matrix with optional diagonal ridge regularization."""
+    arr = np.asarray(returns_matrix, dtype=np.float64)
+    if len(arr) < 2:
+        k = arr.shape[1] if arr.ndim > 1 else 1
+        return np.eye(k, dtype=np.float64)
+    cov = np.cov(arr, rowvar=False)
+    if cov.ndim == 0:
+        cov = np.array([[float(cov)]], dtype=np.float64)
+    # Verify positive semi-definiteness & apply ridge regularization if needed
+    eigenvalues = np.linalg.eigvalsh(cov)
+    if (eigenvalues < ridge_epsilon).any():
+        cov = cov + (ridge_epsilon * np.eye(cov.shape[0], dtype=np.float64))
+    return cov
+
+
+def compute_portfolio_variance(weights: np.ndarray, cov_matrix: np.ndarray) -> float:
+    """Compute scalar portfolio variance w^T Sigma w."""
+    w = np.asarray(weights, dtype=np.float64)
+    sigma = np.asarray(cov_matrix, dtype=np.float64)
+    if len(w) == 0 or sigma.size == 0 or len(w) != sigma.shape[0]:
+        return 0.0
+    variance = float(np.dot(w, np.dot(sigma, w)))
+    return max(0.0, variance)
+
+
+def compute_multivariate_parametric_var(
+    portfolio_value: float,
+    weights: np.ndarray,
+    returns_matrix: np.ndarray,
+    confidence: float = 0.95,
+    horizon_days: int = 1,
+) -> float:
+    """Compute joint multi-asset Parametric Value-at-Risk using empirical covariance matrix."""
+    if len(returns_matrix) < 2 or portfolio_value <= 0 or len(weights) == 0:
+        return 0.0
+    cov = compute_covariance_matrix(returns_matrix)
+    port_var = compute_portfolio_variance(weights, cov)
+    port_vol = math.sqrt(port_var)
+    z_score = 1.6449 if confidence <= 0.95 else 2.3263
+    var = portfolio_value * z_score * port_vol * math.sqrt(horizon_days)
+    return round(float(var), 2)
