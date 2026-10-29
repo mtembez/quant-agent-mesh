@@ -2,16 +2,23 @@
 
 import time
 import uuid
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
+from core.data_feed import DEFAULT_ASSET_SPECS
 from core.models import Order, OrderSide, OrderStatus, OrderType, Portfolio, Position
 
 
 class PaperExecutionEngine:
     """Simulates realistic trade fills, bid-ask spreads, and portfolio accounting."""
 
-    def __init__(self, initial_capital: float = 100000.0, slippage_bps: float = 5.0):
+    def __init__(
+        self,
+        initial_capital: float = 100000.0,
+        slippage_bps: float = 5.0,
+        asset_specs: Optional[Dict[str, Dict[str, Any]]] = None,
+    ):
         self.initial_capital = initial_capital
         self.slippage_pct = slippage_bps / 10000.0
+        self.asset_specs = asset_specs or DEFAULT_ASSET_SPECS
         self.portfolio = Portfolio(
             cash=initial_capital,
             initial_capital=initial_capital,
@@ -54,9 +61,12 @@ class PaperExecutionEngine:
             elif order.side == OrderSide.SELL and market_price < order.limit_price:
                 return order  # Remains PENDING
 
-        # Apply slippage
+        # Apply slippage and asset-specific precision
+        spec = self.asset_specs.get(order.symbol, {"pip_decimal": 2, "tick_size": 0.01})
+        pip_dec = spec.get("pip_decimal", 2)
+
         slippage_mult = (1.0 + self.slippage_pct) if order.side == OrderSide.BUY else (1.0 - self.slippage_pct)
-        fill_price = round(float(market_price * slippage_mult), 2)
+        fill_price = round(float(market_price * slippage_mult), pip_dec)
         total_cost = fill_price * order.quantity
 
         if order.side == OrderSide.BUY:
@@ -70,7 +80,7 @@ class PaperExecutionEngine:
                 total_qty = pos.quantity + order.quantity
                 new_entry = ((pos.quantity * pos.entry_price) + total_cost) / max(1e-9, total_qty)
                 pos.quantity = total_qty
-                pos.entry_price = round(new_entry, 2)
+                pos.entry_price = round(new_entry, pip_dec)
                 pos.current_price = fill_price
             else:
                 self.portfolio.positions[order.symbol] = Position(
@@ -97,7 +107,7 @@ class PaperExecutionEngine:
         order.status = OrderStatus.FILLED
         order.filled_price = fill_price
         order.filled_at = time.time()
-        order.slippage = round(float(abs(fill_price - market_price)), 4)
+        order.slippage = round(float(abs(fill_price - market_price)), max(4, pip_dec))
 
         self.mark_to_market({order.symbol: fill_price})
         return order
@@ -111,10 +121,23 @@ class PaperExecutionEngine:
         for sym, pos in self.portfolio.positions.items():
             if sym in current_prices:
                 pos.current_price = current_prices[sym]
-            pos.unrealized_pnl = round(float((pos.current_price - pos.entry_price) * pos.quantity), 2)
+            pos.unrealized_pnl = float((pos.current_price - pos.entry_price) * pos.quantity)
             pos_equity += pos.current_price * pos.quantity
             total_unrealized += pos.unrealized_pnl
             total_realized += pos.realized_pnl
 
-        self.portfolio.equity = round(float(self.portfolio.cash + pos_equity), 2)
-        self.portfolio.total_pnl = round(float(self.portfolio.equity - self.initial_capital), 2)
+        self.portfolio.equity = float(self.portfolio.cash + pos_equity)
+        self.portfolio.total_pnl = float(self.portfolio.equity - self.initial_capital)
+
+    def get_normalized_portfolio_weights(self, current_prices: Dict[str, float]) -> Dict[str, float]:
+        """Compute normalized notional USD weights for active portfolio positions."""
+        self.mark_to_market(current_prices)
+        total_equity = max(1e-9, self.portfolio.equity)
+        weights: Dict[str, float] = {}
+
+        for sym, pos in self.portfolio.positions.items():
+            price = current_prices.get(sym, pos.current_price)
+            notional_value = pos.quantity * price
+            weights[sym] = float(notional_value / total_equity)
+
+        return weights
