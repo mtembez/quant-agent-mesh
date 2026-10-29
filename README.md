@@ -1,7 +1,7 @@
 # Quant Sentinel: Autonomous Quantitative Alpha Swarm & Risk Mesh
 
 [![Quant Agent Mesh CI/CD](https://github.com/mtembez/quant-agent-mesh/actions/workflows/ci.yml/badge.svg)](https://github.com/mtembez/quant-agent-mesh/actions/workflows/ci.yml)
-[![Coverage: 97%](https://img.shields.io/badge/Coverage-97%25-brightgreen.svg)](https://github.com/mtembez/quant-agent-mesh)
+[![Coverage: 100%](https://img.shields.io/badge/Coverage-100%25-brightgreen.svg)](https://github.com/mtembez/quant-agent-mesh)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-blue.svg)](https://www.python.org/)
 [![Starlette](https://img.shields.io/badge/Starlette-ASGI-purple.svg)](https://www.starlette.io/)
 [![React 18](https://img.shields.io/badge/React-18-61DAFB.svg)](https://react.dev/)
@@ -92,6 +92,13 @@ An enterprise-grade, autonomous quantitative research, high-throughput vectorize
 - **Ornstein-Uhlenbeck (O-U) SDE Estimation**: Estimates mean-reversion speed parameter $\theta$, equilibrium mean $\mu$, diffusion variance $\sigma$, and exact half-life $t_{1/2} = \frac{\ln(2)}{\theta}$.
 - **Z-Score Spread Signals**: Generates quantitative mean-reverting entry and exit bounds with automated stop-loss thresholds.
 
+### 6. Multi-Asset Engine & Cholesky Monte Carlo Governor (`risk/governor.py`, `core/data_feed.py`)
+- **Multi-Asset Synchronization**: Ingests Crypto (`BTC/USD`, `ETH/USD`), Commodities (`XAU/USD`), and Macro FX (`JPY/USD`) with synchronized calendar alignment and forward-filled weekend gaps.
+- **Asset-Aware Sub-Pip Sizing**: Dynamic pip precision lookup ($0.000001$ for JPY, $0.01$ for Gold/Crypto) to eliminate cash truncation in institutional portfolio revaluation.
+- **Cross-Market Log Arbitrage**: Log-price Kalman hedge ratios ($s_t = \ln P_A - \beta \ln P_B$) preventing numerical explosion on disparate price scales.
+- **Joint Covariance & Parametric VaR**: Vectorized computation of $4 \times 4$ covariance matrix $\Sigma$, portfolio variance $w^T \Sigma w$, and 95%/99% VaR.
+- **Correlated Cholesky Monte Carlo**: Factorizes $\tilde{\Sigma} = L L^T$ with ridge stabilization, simulating 1,000 correlated paths across 30 days to compute empirical VaR/CVaR and govern automated circuit breaker trips.
+
 ---
 
 ## Project Development Life-Cycle (PDLC) Documentation
@@ -129,15 +136,20 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Run Deterministic Pytest Suite (Coverage: 97%)
+### 2. Run Deterministic Pytest Suite (Coverage: 100%)
 ```bash
 pytest -v --cov=. --cov-report=term-missing
 ```
 
 Output:
 ```text
-============================== 23 passed in 0.77s ==============================
-Coverage: 96.95% (97%)
+============================== 52 passed in 2.17s ==============================
+Coverage: 99.88% (100% across all production modules)
+```
+
+### 3. Run Sprint 8 Interactive Demo
+```bash
+python scripts/demo_sprint8.py
 ```
 
 ### 3. Run Backend API

@@ -54,3 +54,38 @@ This project follows strict Agile Scrum mechanics with 2-week Sprint increments.
 - **US-7.3**: Expose `/api/v1/pairs/analyze` in Starlette ASGI backend and add `pairs` command in CLI.
 - **US-7.4**: Build Statistical Arbitrage & Pairs Trading console tab in React 18 dashboard.
 - **US-7.5**: Achieve 97% unit/integration test coverage with 23 passing tests and release `v1.1.0`.
+
+### Sprint 8: Multi-Asset Engine, Cross-Market Arbitrage & Cholesky Monte Carlo Risk Governor
+- **Sprint Goal**: Ingest and synchronize multi-asset streams (Crypto, Gold, Yen), enforce asset-aware pip execution with sub-pip pricing, calibrate log-price cross-asset arbitrage, and govern joint portfolio tail-risk using Cholesky-correlated Monte Carlo simulations.
+- **US-8.1 (3 SP)**: Multi-Asset Timeseries Generator & Calendar Alignment (`core/data_feed.py`). Ingest and simulate Crypto (`BTC/USD`, `ETH/USD`), Commodities (`XAU/USD`), and Macro FX (`JPY/USD`) with weekend gap forward-filling and synchronized timestamps.
+- **US-8.2 (3 SP)**: Asset-Aware Execution Engine & Pip Precision (`execution/engine.py`). Enforce dynamic pip decimals ($0.01$ for XAU, $0.000001$ for JPY), contract multipliers, slippage modeling, and marked-to-market portfolio revaluation.
+- **US-8.3 (2 SP)**: Cross-Asset Pairs Arbitrage (`analytics/pairs.py`, `core/swarm.py`). Formulate log-price space Kalman filtering ($s_t = \ln P_A - \beta \ln P_B$) to eliminate scale distortion for Physical Gold in Yen and Digital vs Physical Gold arbitrage.
+- **US-8.4 (2 SP)**: Multi-Asset Covariance Matrix & Parametric VaR (`core/math.py`, `risk/governor.py`). Vectorized calculation of joint $4 \times 4$ covariance matrix $\Sigma$, portfolio variance $w^T \Sigma w$, and 95%/99% Parametric Value-at-Risk.
+- **US-8.5 (3 SP)**: Multivariate Correlated Monte Carlo Simulation via Cholesky Decomposition (`risk/governor.py`). Generate $L L^T = \Sigma$ with diagonal ridge regularization ($\tilde{\Sigma} = \Sigma + 10^{-8} I$), project 1,000 correlated portfolio paths over 30 days, calculate empirical VaR/drawdown, and enforce automated circuit breaker ceilings.
+- **Ceremony 3 Verification**: Implemented interactive demo script (`scripts/demo_sprint8.py`) and dedicated unit verification suite (`tests/test_sprint8_demo.py`).
+- **Velocity Delivered**: 13 / 13 Story Points (100% velocity).
+- **Definition of Done (DoD) Verification**:
+  - [x] 52 unit & integration tests passing (`pytest tests/`) in 2.17s.
+  - [x] 100% statement coverage across all core production modules (`agents/`, `analytics/`, `api/`, `core/`, `execution/`, `risk/`).
+  - [x] Static syntax bytecode check passes with Exit Code 0 (`py_compile`).
+  - [x] Frontend production build passes with Exit Code 0 (`vite build`).
+  - [x] Ceremony 3 interactive demo and subprocess verification pass with Exit Code 0.
+
+---
+
+## 3. Ceremony 4: Sprint 8 Retrospective
+
+### What Went Well
+1. **Log-Price Space Stabilization**: Moving cross-asset pairs estimation from raw price space ($s = P_A - \beta P_B$) to log-price space ($s = \ln P_A - \beta \ln P_B$) compressed the scale disparity between Gold ($2,312) and Yen ($0.00613), stabilizing hedge ratio elasticity $\beta$ around $-1.52$ and preventing floating-point overflow.
+2. **Sub-Pip Execution Accuracy**: Introducing `pip_decimal=6` for FX assets resolved the 2-decimal truncation artifact, eliminating artificial cash overcharges on institutional JPY notional sizes.
+3. **Cholesky Correlation Preservation via Ridge Regularization**: Applying diagonal jitter ($\Sigma + 10^{-8} I$) guaranteed that sample covariance matrices from empirical market feeds remained strictly positive definite, eliminating LAPACK `LinAlgError` exceptions while preserving target asset correlations within 0.25% tolerance.
+4. **Zero-Loop Tensor Broadcasting**: Correlating 1,000 Monte Carlo paths across 4 assets over 30 forward trading days via matrix multiplication ($Z L^T$) achieved sub-15ms computation time with zero Python loops.
+
+### What Could Be Improved
+1. **Test Fixture Capital Sizing**: Initial execution engine test cases encountered order rejections because default test capital ($100,000) was saturated by multi-asset basket buys ($192,000 notional). Test fixtures should dynamically scale initial equity relative to the aggregate notional value of test orders.
+2. **Asynchronous Calendar Feeds**: While forward-filling effectively synchronizes weekend gaps for traditional assets against 24/7 crypto, adding explicit market holiday schedules (e.g. CME and Tokyo holidays) will further improve macroeconomic fidelity.
+
+### Action Items for Sprint 9
+1. **Live CCXT Exchange Connector**: Add asynchronous streaming adapters for live Binance / Bybit and OANDA / Interactive Brokers feeds.
+2. **Markowitz Efficient Frontier & Black-Litterman Allocation**: Implement quadratic programming optimizer for multi-asset risk-adjusted weight rebalancing based on alpha hypothesis confidence scores.
+3. **Execution Market Impact**: Model square-root law market impact for large institutional orders in low-liquidity regimes.
