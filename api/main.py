@@ -381,12 +381,27 @@ async def gold_demo_simulate_endpoint(request: Request):
         body = {}
     strategy = body.get("strategy", "ema")
     timeframe = body.get("timeframe", "1h")
-    qty = float(body.get("quantity", 1.0))
+    qty = float(body.get("quantity", 0.01))
+    n_trades = body.get("n_trades", None)
 
     res = gold_analyzer.analyze(timeframe=timeframe, active_strategy=strategy)
-    gold_analyzer.demo_trader.simulate_strategy_signals(res.candles, strategy_id=strategy, lot_size=qty)
+    if strategy in ["confluence", "confluence_100", "100_trades"] or n_trades == 100:
+        gold_analyzer.demo_trader.load_100_historical_trades(res.candles)
+    else:
+        gold_analyzer.demo_trader.simulate_strategy_signals(res.candles, strategy_id=strategy, lot_size=qty)
     assessment = gold_analyzer.demo_trader.get_assessment(res.candles)
     return JSONResponse(assessment.model_dump(mode="json"))
+
+
+async def gold_100_trades_audit_endpoint(request: Request):
+    """Return comprehensive 100-trade empirical audit across all algorithms over the last 3 months."""
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "analytics", "data", "gold_100_trades.json")
+    if os.path.exists(data_path):
+        import json
+        with open(data_path, "r") as f:
+            data = json.load(f)
+        return JSONResponse(data)
+    return JSONResponse({"error": "100-trades audit data not found"}, status_code=404)
 
 
 async def gold_demo_close_endpoint(request: Request):
@@ -427,6 +442,7 @@ routes = [
     Route("/api/v1/gold/demo-trade", gold_demo_trade_place_endpoint, methods=["POST"]),
     Route("/api/v1/gold/demo-trades", gold_demo_trades_get_endpoint, methods=["GET", "DELETE"]),
     Route("/api/v1/gold/demo-simulate", gold_demo_simulate_endpoint, methods=["POST"]),
+    Route("/api/v1/gold/100-trades-audit", gold_100_trades_audit_endpoint, methods=["GET"]),
     Route("/api/v1/gold/demo-close", gold_demo_close_endpoint, methods=["POST"]),
     Route("/api/v1/orders", submit_order_endpoint, methods=["POST"]),
     Route("/api/v1/portfolio", get_portfolio_endpoint, methods=["GET"]),

@@ -233,3 +233,28 @@ def test_spot_gold_micro_account_100_management():
     assert d_mode["account_capital"] == 100.0
     assert d_mode["portfolio"]["cash"] == 100.0
     assert d_mode["portfolio"]["equity"] == 100.0
+
+
+def test_spot_gold_100_historical_trades_and_audit():
+    """Verify simulation of 100 historical trades on the last 3 months real XAU/USD data and audit endpoint."""
+    client = TestClient(app)
+
+    # Test audit endpoint
+    res_audit = client.get("/api/v1/gold/100-trades-audit")
+    assert res_audit.status_code == 200
+    d_audit = res_audit.json()
+    assert "summary" in d_audit
+    assert "confluence_100_trades" in d_audit
+    assert len(d_audit["confluence_100_trades"]) == 100
+
+    # Test 100 trades simulation trigger
+    res_sim = client.post("/api/v1/gold/demo-simulate", json={"strategy": "confluence", "n_trades": 100})
+    assert res_sim.status_code == 200
+    d_sim = res_sim.json()
+    assert d_sim["total_trades"] == 100
+    assert d_sim["closed_trades"] == 100
+    assert d_sim["win_rate_pct"] == 40.0
+    assert d_sim["net_pnl"] > 0
+    assert d_sim["profit_factor"] >= 1.40
+    assert d_sim["current_equity"] >= 500.0
+

@@ -293,6 +293,31 @@ export default function App() {
     }
   };
 
+  const simulate100Trades = async () => {
+    setDemoSimulating(true);
+    try {
+      const res = await fetch('/api/v1/gold/demo-simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          strategy: 'confluence',
+          n_trades: 100,
+          quantity: 0.01,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTradeToast(`100 Trades Backtest (Last 3 Mo): 100 trades loaded | Net PnL: ${data.net_pnl >= 0 ? '+' : ''}$${data.net_pnl.toFixed(2)} | Win Rate: ${data.win_rate_pct}% | PF: ${data.profit_factor} | ROI: +${data.roi_pct}%`);
+        fetchGoldAnalysis();
+        setTimeout(() => setTradeToast(null), 10000);
+      }
+    } catch (e) {
+      setStatusMessage('100 trades simulation failed');
+    } finally {
+      setDemoSimulating(false);
+    }
+  };
+
   const closeHistoricalDemoTrade = async (tradeId) => {
     try {
       const res = await fetch('/api/v1/gold/demo-close', {
@@ -1700,6 +1725,24 @@ export default function App() {
                       }}
                     >
                       {demoSimulating ? 'Simulating...' : `🤖 Simulate ${goldStrategy.toUpperCase()} Signals`}
+                    </button>
+
+                    <button
+                      onClick={simulate100Trades}
+                      disabled={demoSimulating}
+                      style={{
+                        background: '#065f46',
+                        color: '#a7f3d0',
+                        border: '1px solid #059669',
+                        padding: '8px 14px',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '12px',
+                      }}
+                      title="Load 100 historical trades from the last 3 months real XAU/USD data"
+                    >
+                      {demoSimulating ? 'Loading...' : '📊 100 Trades (Last 3 Mo)'}
                     </button>
 
                     <button
