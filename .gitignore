@@ -25,6 +25,7 @@ htmlcov/
 market_data/
 backtest_results/
 strategy_checkpoints/
+analytics/data/gold_live_cache_*.json
 
 # Frontend
 frontend/node_modules

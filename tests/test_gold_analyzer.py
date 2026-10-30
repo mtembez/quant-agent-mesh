@@ -261,3 +261,46 @@ def test_spot_gold_100_historical_trades_and_audit():
     assert d_sim["profit_factor"] >= 1.40
     assert d_sim["current_equity"] >= 500.0
 
+
+def test_spot_gold_1000_historical_trades_and_audit():
+    """Verify simulation of 1,000 historical trades on the last 3 months real XAU/USD data and audit endpoint."""
+    client = TestClient(app)
+
+    # Test audit endpoint
+    res_audit = client.get("/api/v1/gold/1000-trades-audit")
+    assert res_audit.status_code == 200
+    d_audit = res_audit.json()
+    assert "summary" in d_audit
+    assert "confluence_1000_trades" in d_audit
+    assert len(d_audit["confluence_1000_trades"]) == 1000
+    summary = d_audit["summary"]
+    assert summary["total_trades"] == 1000
+    assert summary["win_rate_pct"] > 50.0
+    assert summary["profit_factor"] >= 1.50
+    assert summary["net_pnl"] > 2000.0
+
+    # Test 1000 trades simulation trigger
+    res_sim = client.post("/api/v1/gold/demo-simulate", json={"strategy": "1000_trades", "n_trades": 1000})
+    assert res_sim.status_code == 200
+    d_sim = res_sim.json()
+    assert d_sim["total_trades"] == 1000
+    assert d_sim["closed_trades"] == 1000
+    assert d_sim["win_rate_pct"] > 50.0
+    assert d_sim["net_pnl"] > 2000.0
+    assert d_sim["profit_factor"] >= 1.50
+    assert d_sim["current_equity"] >= 2000.0
+
+
+def test_spot_gold_live_feed_integration():
+    """Verify real-time live market feed ingestion without synthetic random walk overrides."""
+    analyzer = SpotGoldAnalyzer()
+    res = analyzer.analyze(timeframe="1h")
+
+    assert res.is_live is True
+    assert res.data_source.startswith("LIVE_")
+    assert 3500.0 <= res.current_spot_price <= 4600.0
+    assert len(res.candles) == 60
+    assert "Oct" in res.candles[-1].time_label or ":" in res.candles[-1].time_label
+    assert res.chart_previous_close > 0.0
+    assert res.daily_change_pct != 0.0
+

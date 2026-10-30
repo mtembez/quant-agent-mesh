@@ -232,10 +232,12 @@ async def gold_analyze_endpoint(request: Request):
 
     timeframe = body.get("timeframe", "1h")
     active_strategy = body.get("strategy", "ema")
-    try:
-        spot_px = float(body.get("spot_price", 3984.66))
-    except (ValueError, TypeError):
-        spot_px = 3984.66
+    spot_px = None
+    if "spot_price" in body and body["spot_price"] is not None and str(body["spot_price"]).strip() != "":
+        try:
+            spot_px = float(body["spot_price"])
+        except (ValueError, TypeError):
+            spot_px = None
 
     ema_fast = int(body.get("ema_fast", 12))
     ema_slow = int(body.get("ema_slow", 26))
@@ -385,7 +387,9 @@ async def gold_demo_simulate_endpoint(request: Request):
     n_trades = body.get("n_trades", None)
 
     res = gold_analyzer.analyze(timeframe=timeframe, active_strategy=strategy)
-    if strategy in ["confluence", "confluence_100", "100_trades"] or n_trades == 100:
+    if strategy in ["confluence_1000", "1000_trades"] or n_trades == 1000:
+        gold_analyzer.demo_trader.load_1000_historical_trades(res.candles)
+    elif strategy in ["confluence", "confluence_100", "100_trades"] or n_trades == 100:
         gold_analyzer.demo_trader.load_100_historical_trades(res.candles)
     else:
         gold_analyzer.demo_trader.simulate_strategy_signals(res.candles, strategy_id=strategy, lot_size=qty)
@@ -402,6 +406,17 @@ async def gold_100_trades_audit_endpoint(request: Request):
             data = json.load(f)
         return JSONResponse(data)
     return JSONResponse({"error": "100-trades audit data not found"}, status_code=404)
+
+
+async def gold_1000_trades_audit_endpoint(request: Request):
+    """Return comprehensive 1,000-trade empirical audit across all algorithms over the last 3 months."""
+    data_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "analytics", "data", "gold_1000_trades.json")
+    if os.path.exists(data_path):
+        import json
+        with open(data_path, "r") as f:
+            data = json.load(f)
+        return JSONResponse(data)
+    return JSONResponse({"error": "1000-trades audit data not found"}, status_code=404)
 
 
 async def gold_demo_close_endpoint(request: Request):
@@ -443,6 +458,7 @@ routes = [
     Route("/api/v1/gold/demo-trades", gold_demo_trades_get_endpoint, methods=["GET", "DELETE"]),
     Route("/api/v1/gold/demo-simulate", gold_demo_simulate_endpoint, methods=["POST"]),
     Route("/api/v1/gold/100-trades-audit", gold_100_trades_audit_endpoint, methods=["GET"]),
+    Route("/api/v1/gold/1000-trades-audit", gold_1000_trades_audit_endpoint, methods=["GET"]),
     Route("/api/v1/gold/demo-close", gold_demo_close_endpoint, methods=["POST"]),
     Route("/api/v1/orders", submit_order_endpoint, methods=["POST"]),
     Route("/api/v1/portfolio", get_portfolio_endpoint, methods=["GET"]),
