@@ -14,6 +14,7 @@ from agents.regime_agent import RegimeDetectionAgent
 from agents.alpha_agent import AlphaHypothesisAgent
 from agents.backtest_agent import VectorizedBacktestAgent
 from analytics.pairs import OrnsteinUhlenbeckEstimator
+from analytics.gold_demo_trader import SpotGoldDemoTrader
 
 
 class GoldCandle(BaseModel):
@@ -103,6 +104,8 @@ class SpotGoldAnalysisResponse(BaseModel):
     ml_confidence_score: float = 88.5
     ml_consensus_signal: str = "BUY"
     ml_driving_features: List[str] = Field(default_factory=list)
+    # Demo Trades Assessment Telemetry
+    demo_assessment: Optional[Dict[str, Any]] = None
 
 
 
@@ -303,6 +306,7 @@ class SpotGoldAnalyzer:
         self.backtest_agent = VectorizedBacktestAgent(initial_capital=100000.0)
         self.ou_estimator = OrnsteinUhlenbeckEstimator()
         self.ml_engine = GoldOnlineMLEngine()
+        self.demo_trader = SpotGoldDemoTrader(initial_capital=100000.0)
 
     def analyze(
         self,
@@ -635,6 +639,9 @@ class SpotGoldAnalyzer:
         btc_rate = float(feed["BTC/USD"][-1].close)
         btc_gold = round(btc_rate / max(1e-9, current_spot), 4)
 
+        # Evaluate current demo trades state against generated candles
+        demo_eval = self.demo_trader.get_assessment(candle_objs).model_dump(mode="json")
+
         return SpotGoldAnalysisResponse(
             symbol="XAU/USD",
             timeframe=timeframe,
@@ -666,5 +673,6 @@ class SpotGoldAnalyzer:
             ml_confidence_score=ml_conf,
             ml_consensus_signal=ml_consensus,
             ml_driving_features=ml_attributions,
+            demo_assessment=demo_eval,
         )
 

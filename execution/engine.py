@@ -15,10 +15,12 @@ class PaperExecutionEngine:
         initial_capital: float = 100000.0,
         slippage_bps: float = 5.0,
         asset_specs: Optional[Dict[str, Dict[str, Any]]] = None,
+        allow_short: bool = False,
     ):
         self.initial_capital = initial_capital
         self.slippage_pct = slippage_bps / 10000.0
         self.asset_specs = asset_specs or DEFAULT_ASSET_SPECS
+        self.allow_short = allow_short
         self.portfolio = Portfolio(
             cash=initial_capital,
             initial_capital=initial_capital,
@@ -70,39 +72,85 @@ class PaperExecutionEngine:
         total_cost = fill_price * order.quantity
 
         if order.side == OrderSide.BUY:
-            if self.portfolio.cash < total_cost:
-                order.status = OrderStatus.REJECTED
-                return order
-
-            self.portfolio.cash -= total_cost
-            if order.symbol in self.portfolio.positions:
-                pos = self.portfolio.positions[order.symbol]
-                total_qty = pos.quantity + order.quantity
-                new_entry = ((pos.quantity * pos.entry_price) + total_cost) / max(1e-9, total_qty)
-                pos.quantity = total_qty
-                pos.entry_price = round(new_entry, pip_dec)
-                pos.current_price = fill_price
+            current_pos = self.portfolio.positions.get(order.symbol)
+            if current_pos and current_pos.quantity < 0:
+                # Covering short position
+                cover_qty = min(order.quantity, abs(current_pos.quantity))
+                realized_pnl = (current_pos.entry_price - fill_price) * cover_qty
+                current_pos.realized_pnl += realized_pnl
+                current_pos.quantity += cover_qty
+                self.portfolio.cash += realized_pnl
+                excess_qty = order.quantity - cover_qty
+                if current_pos.quantity >= 0.0:
+                    del self.portfolio.positions[order.symbol]
+                if excess_qty > 0:
+                    excess_cost = excess_qty * fill_price
+                    if self.portfolio.cash >= excess_cost:
+                        self.portfolio.cash -= excess_cost
+                        self.portfolio.positions[order.symbol] = Position(
+                            symbol=order.symbol,
+                            quantity=excess_qty,
+                            entry_price=fill_price,
+                            current_price=fill_price,
+                        )
             else:
-                self.portfolio.positions[order.symbol] = Position(
-                    symbol=order.symbol,
-                    quantity=order.quantity,
-                    entry_price=fill_price,
-                    current_price=fill_price,
-                )
+                if self.portfolio.cash < total_cost:
+                    order.status = OrderStatus.REJECTED
+                    return order
+
+                self.portfolio.cash -= total_cost
+                if order.symbol in self.portfolio.positions:
+                    pos = self.portfolio.positions[order.symbol]
+                    total_qty = pos.quantity + order.quantity
+                    new_entry = ((pos.quantity * pos.entry_price) + total_cost) / max(1e-9, total_qty)
+                    pos.quantity = total_qty
+                    pos.entry_price = round(new_entry, pip_dec)
+                    pos.current_price = fill_price
+                else:
+                    self.portfolio.positions[order.symbol] = Position(
+                        symbol=order.symbol,
+                        quantity=order.quantity,
+                        entry_price=fill_price,
+                        current_price=fill_price,
+                    )
         elif order.side == OrderSide.SELL:
             current_pos = self.portfolio.positions.get(order.symbol)
-            if not current_pos or current_pos.quantity < order.quantity:
+            if not self.allow_short and (not current_pos or current_pos.quantity < order.quantity):
                 order.status = OrderStatus.REJECTED
                 return order
 
-            revenue = total_cost
-            self.portfolio.cash += revenue
-            realized_pnl = (fill_price - current_pos.entry_price) * order.quantity
-            current_pos.realized_pnl += realized_pnl
-            current_pos.quantity -= order.quantity
-
-            if current_pos.quantity <= 0.0:
-                del self.portfolio.positions[order.symbol]
+            if current_pos and current_pos.quantity > 0:
+                sell_qty = min(order.quantity, current_pos.quantity)
+                revenue = sell_qty * fill_price
+                self.portfolio.cash += revenue
+                realized_pnl = (fill_price - current_pos.entry_price) * sell_qty
+                current_pos.realized_pnl += realized_pnl
+                current_pos.quantity -= sell_qty
+                excess_qty = order.quantity - sell_qty
+                if current_pos.quantity <= 0.0:
+                    del self.portfolio.positions[order.symbol]
+                if excess_qty > 0 and self.allow_short:
+                    self.portfolio.positions[order.symbol] = Position(
+                        symbol=order.symbol,
+                        quantity=-excess_qty,
+                        entry_price=fill_price,
+                        current_price=fill_price,
+                    )
+            elif self.allow_short:
+                # Open or scale short position
+                if current_pos and current_pos.quantity < 0:
+                    total_qty = current_pos.quantity - order.quantity
+                    new_entry = ((abs(current_pos.quantity) * current_pos.entry_price) + total_cost) / max(1e-9, abs(total_qty))
+                    current_pos.quantity = total_qty
+                    current_pos.entry_price = round(new_entry, pip_dec)
+                    current_pos.current_price = fill_price
+                else:
+                    self.portfolio.positions[order.symbol] = Position(
+                        symbol=order.symbol,
+                        quantity=-order.quantity,
+                        entry_price=fill_price,
+                        current_price=fill_price,
+                    )
 
         order.status = OrderStatus.FILLED
         order.filled_price = fill_price

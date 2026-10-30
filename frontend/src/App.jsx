@@ -36,6 +36,10 @@ export default function App() {
   const [goldTradeSide, setGoldTradeSide] = useState('BUY');
   const [tradeExecuting, setTradeExecuting] = useState(false);
   const [tradeToast, setTradeToast] = useState(null);
+  const [selectedCandleForTrade, setSelectedCandleForTrade] = useState(null);
+  const [demoSimulating, setDemoSimulating] = useState(false);
+  const [demoTradeSl, setDemoTradeSl] = useState('');
+  const [demoTradeTp, setDemoTradeTp] = useState('');
 
   // Live Auto-Learning Predictor State
   const [livePrediction, setLivePrediction] = useState(null);
@@ -181,28 +185,111 @@ export default function App() {
   const executeSpotGoldTrade = async () => {
     setTradeExecuting(true);
     try {
-      const res = await fetch('/api/v1/gold/trade', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          side: goldTradeSide,
-          quantity: parseFloat(goldTradeQty) || 1.0,
-          market_price: goldData?.current_spot_price || goldSpotPrice,
-          stop_loss: goldData?.trailing_stop_loss || goldSpotPrice * 0.98,
-          take_profit: goldData?.take_profit_target || goldSpotPrice * 1.02,
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setPortfolio(data.portfolio);
-        setTradeToast(`Order #${data.order.order_id} FILLED: ${data.order.side} ${data.order.quantity} XAU/USD @ $${data.order.filled_price.toFixed(2)} | Stop-Loss: $${data.stop_loss.toFixed(2)} | Target: $${data.take_profit.toFixed(2)}`);
-        setStatusMessage(`Spot Gold order filled: ${data.order.side} ${data.order.quantity} XAU/USD`);
-        setTimeout(() => setTradeToast(null), 6000);
+      const entryPx = selectedCandleForTrade ? selectedCandleForTrade.candle.close : (goldData?.current_spot_price || goldSpotPrice);
+      const isHistorical = selectedCandleForTrade !== null;
+
+      // If historical candle is selected, place via demo-trade endpoint
+      if (isHistorical) {
+        const res = await fetch('/api/v1/gold/demo-trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            side: goldTradeSide,
+            bar_index: selectedCandleForTrade.index,
+            quantity: parseFloat(goldTradeQty) || 1.0,
+            entry_price: entryPx,
+            stop_loss: demoTradeSl ? parseFloat(demoTradeSl) : (goldTradeSide === 'BUY' ? entryPx * 0.985 : entryPx * 1.015),
+            take_profit: demoTradeTp ? parseFloat(demoTradeTp) : (goldTradeSide === 'BUY' ? entryPx * 1.03 : entryPx * 0.97),
+            timeframe: goldTimeframe,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setTradeToast(`Demo Trade #${data.trade.trade_id} [${data.trade.side} ${data.trade.quantity} Lots @ $${data.trade.entry_price}] placed on ${data.trade.time_label} | Outcome: ${data.trade.status} (${data.trade.return_pct >= 0 ? '+' : ''}${data.trade.return_pct}%)`);
+          fetchGoldAnalysis();
+          setTimeout(() => setTradeToast(null), 7000);
+        }
+      } else {
+        const res = await fetch('/api/v1/gold/trade', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            side: goldTradeSide,
+            quantity: parseFloat(goldTradeQty) || 1.0,
+            market_price: entryPx,
+            stop_loss: demoTradeSl ? parseFloat(demoTradeSl) : (goldData?.trailing_stop_loss || entryPx * 0.98),
+            take_profit: demoTradeTp ? parseFloat(demoTradeTp) : (goldData?.take_profit_target || entryPx * 1.02),
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setPortfolio(data.portfolio);
+          const fillPx = data.order.filled_price || entryPx;
+          setTradeToast(`Order #${data.order.order_id} FILLED: ${data.order.side} ${data.order.quantity} XAU/USD @ $${fillPx.toFixed(2)} | Stop: $${data.stop_loss.toFixed(2)} | Target: $${data.take_profit.toFixed(2)}`);
+          setStatusMessage(`Spot Gold order filled: ${data.order.side} ${data.order.quantity} XAU/USD`);
+          fetchGoldAnalysis();
+          setTimeout(() => setTradeToast(null), 6000);
+        }
       }
     } catch (e) {
       setStatusMessage('Gold trade execution failed');
     } finally {
       setTradeExecuting(false);
+    }
+  };
+
+  const simulateHistoricalDemoTrades = async () => {
+    setDemoSimulating(true);
+    try {
+      const res = await fetch('/api/v1/gold/demo-simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          strategy: goldStrategy,
+          timeframe: goldTimeframe,
+          quantity: parseFloat(goldTradeQty) || 1.0,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTradeToast(`Simulation Complete: ${data.total_trades} demo trades simulated across ${goldStrategy.toUpperCase()} historical signals | Net PnL: ${data.net_pnl >= 0 ? '+' : ''}$${data.net_pnl.toFixed(2)} | Win Rate: ${data.win_rate_pct}% | PF: ${data.profit_factor}`);
+        fetchGoldAnalysis();
+        setTimeout(() => setTradeToast(null), 8000);
+      }
+    } catch (e) {
+      setStatusMessage('Simulation failed');
+    } finally {
+      setDemoSimulating(false);
+    }
+  };
+
+  const closeHistoricalDemoTrade = async (tradeId) => {
+    try {
+      const res = await fetch('/api/v1/gold/demo-close', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ trade_id: tradeId }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setTradeToast(`Demo trade #${data.trade.trade_id} CLOSED @ $${data.trade.exit_price} | PnL: ${data.trade.realized_pnl >= 0 ? '+' : ''}$${data.trade.realized_pnl.toFixed(2)}`);
+        fetchGoldAnalysis();
+        setTimeout(() => setTradeToast(null), 6000);
+      }
+    } catch (e) {
+      setStatusMessage('Failed to close demo trade');
+    }
+  };
+
+  const clearHistoricalDemoTrades = async () => {
+    try {
+      await fetch('/api/v1/gold/demo-trades', { method: 'DELETE' });
+      setSelectedCandleForTrade(null);
+      setTradeToast('Cleared all historical demo trades');
+      fetchGoldAnalysis();
+      setTimeout(() => setTradeToast(null), 4000);
+    } catch (e) {
+      setStatusMessage('Failed to clear demo trades');
     }
   };
 
@@ -509,12 +596,29 @@ export default function App() {
             const topBody = Math.min(yOpen, yClose);
             const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
 
+            const isSelected = selectedCandleForTrade && selectedCandleForTrade.index === i;
+
             return (
               <g
                 key={i}
                 onMouseEnter={() => setHoveredCandle(c)}
-                style={{ cursor: 'crosshair' }}
+                onClick={() => setSelectedCandleForTrade({ candle: c, index: i })}
+                style={{ cursor: 'pointer' }}
               >
+                {/* Selection Halo */}
+                {isSelected && (
+                  <rect
+                    x={cx - candleWidth / 2 - 4}
+                    y={Math.min(yHigh, yLow) - 4}
+                    width={candleWidth + 8}
+                    height={Math.max(12, Math.abs(yHigh - yLow) + 8)}
+                    fill="none"
+                    stroke="#f59e0b"
+                    strokeWidth="2"
+                    strokeDasharray="3 2"
+                    rx="3"
+                  />
+                )}
                 {/* Wick */}
                 <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={color} strokeWidth="1.2" />
                 {/* Body */}
@@ -535,6 +639,82 @@ export default function App() {
                 )}
                 {c.active_signal === -1 && (
                   <polygon points={`${cx},${yHigh - 12} ${cx - 5},${yHigh - 20} ${cx + 5},${yHigh - 20}`} fill="#ef4444" />
+                )}
+              </g>
+            );
+          })}
+
+          {/* Demo Trades Historical Execution Overlays on Chart */}
+          {goldData.demo_assessment?.trades && goldData.demo_assessment.trades.map((dt) => {
+            if (dt.bar_index < 0 || dt.bar_index >= candles.length) return null;
+            const entryX = getX(dt.bar_index);
+            const entryY = getY(dt.entry_price);
+            const isBuy = dt.side === 'BUY';
+            const hasExited = dt.exit_bar_index !== null && dt.exit_price !== null;
+            const exitX = hasExited ? getX(dt.exit_bar_index) : nowCoord.x;
+            const exitY = hasExited ? getY(dt.exit_price) : getY(dt.current_price);
+            const isProfit = hasExited ? dt.realized_pnl >= 0 : dt.unrealized_pnl >= 0;
+            const lineColor = isProfit ? '#10b981' : '#ef4444';
+
+            return (
+              <g key={dt.trade_id}>
+                <line
+                  x1={entryX}
+                  y1={entryY}
+                  x2={exitX}
+                  y2={exitY}
+                  stroke={lineColor}
+                  strokeWidth="1.6"
+                  strokeDasharray="4 3"
+                />
+                <circle cx={entryX} cy={entryY} r="4.5" fill={isBuy ? '#10b981' : '#ef4444'} stroke="#fff" strokeWidth="1.5" />
+                <rect
+                  x={entryX - 25}
+                  y={isBuy ? entryY + 8 : entryY - 20}
+                  width="50"
+                  height="13"
+                  fill="#0f172a"
+                  stroke={isBuy ? '#10b981' : '#ef4444'}
+                  strokeWidth="1"
+                  rx="3"
+                />
+                <text
+                  x={entryX}
+                  y={isBuy ? entryY + 18 : entryY - 10}
+                  fill={isBuy ? '#34d399' : '#f87171'}
+                  fontSize="8"
+                  fontFamily="monospace"
+                  textAnchor="middle"
+                  fontWeight="bold"
+                >
+                  {isBuy ? '▲' : '▼'} ${dt.entry_price.toFixed(0)}
+                </text>
+
+                {hasExited && (
+                  <g>
+                    <circle cx={exitX} cy={exitY} r="4.5" fill={isProfit ? '#10b981' : '#ef4444'} stroke="#fff" strokeWidth="1.5" />
+                    <rect
+                      x={exitX - 28}
+                      y={exitY - 18}
+                      width="56"
+                      height="13"
+                      fill="#0f172a"
+                      stroke={lineColor}
+                      strokeWidth="1"
+                      rx="3"
+                    />
+                    <text
+                      x={exitX}
+                      y={exitY - 9}
+                      fill={isProfit ? '#34d399' : '#f87171'}
+                      fontSize="8"
+                      fontFamily="monospace"
+                      textAnchor="middle"
+                      fontWeight="bold"
+                    >
+                      {dt.realized_pnl >= 0 ? '+' : ''}${dt.realized_pnl.toFixed(1)}
+                    </text>
+                  </g>
                 )}
               </g>
             );
@@ -1257,14 +1437,35 @@ export default function App() {
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
                   <div>
                     <h3 style={{ margin: 0, fontSize: '15px', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      ⚡ Instant Spot Gold Order Ticket & Kelly Risk Sizer
+                      ⚡ Instant Spot Gold Order Ticket & Historical Demo Trader
                     </h3>
                     <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
                       Optimal Position Size: <strong style={{ color: '#10b981' }}>{goldData.recommended_lot_size} Lots</strong> (Fractional Kelly) | Trailing Stop: <strong style={{ color: '#ef4444' }}>${goldData.trailing_stop_loss}</strong> | Target: <strong style={{ color: '#38bdf8' }}>${goldData.take_profit_target}</strong>
                     </div>
+                    {/* Selected Historical Bar Indicator */}
+                    <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
+                      <span style={{ color: '#94a3b8' }}>Execution Target:</span>
+                      {selectedCandleForTrade ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <span style={{ background: '#78350f', color: '#fde68a', border: '1px solid #d97706', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                            📍 Historical Bar {selectedCandleForTrade.candle.time_label} (Close: ${selectedCandleForTrade.candle.close.toFixed(2)})
+                          </span>
+                          <button
+                            onClick={() => setSelectedCandleForTrade(null)}
+                            style={{ background: '#374151', color: '#cbd5e1', border: 'none', padding: '2px 6px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px' }}
+                          >
+                            ✕ Reset to Live Spot
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ background: '#064e3b', color: '#a7f3d0', border: '1px solid #059669', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                          ⚡ Live Spot Bar (${goldData.current_spot_price.toFixed(2)}) — Click any candle on chart to select historical entry
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <div style={{ display: 'flex', borderRadius: '6px', overflow: 'hidden', border: '1px solid #374151' }}>
                       <button
                         onClick={() => setGoldTradeSide('BUY')}
@@ -1305,7 +1506,31 @@ export default function App() {
                         max="20.0"
                         value={goldTradeQty}
                         onChange={(e) => setGoldTradeQty(parseFloat(e.target.value) || 1.0)}
-                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '70px', fontWeight: 'bold' }}
+                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '65px', fontWeight: 'bold' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <label style={{ fontSize: '12px', color: '#ef4444' }}>SL ($):</label>
+                      <input
+                        type="number"
+                        step="1.0"
+                        placeholder={goldTradeSide === 'BUY' ? (goldData.current_spot_price * 0.985).toFixed(0) : (goldData.current_spot_price * 1.015).toFixed(0)}
+                        value={demoTradeSl}
+                        onChange={(e) => setDemoTradeSl(e.target.value)}
+                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 8px', borderRadius: '4px', width: '75px', fontWeight: 'bold', fontSize: '11px' }}
+                      />
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <label style={{ fontSize: '12px', color: '#10b981' }}>TP ($):</label>
+                      <input
+                        type="number"
+                        step="1.0"
+                        placeholder={goldTradeSide === 'BUY' ? (goldData.current_spot_price * 1.03).toFixed(0) : (goldData.current_spot_price * 0.97).toFixed(0)}
+                        value={demoTradeTp}
+                        onChange={(e) => setDemoTradeTp(e.target.value)}
+                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 8px', borderRadius: '4px', width: '75px', fontWeight: 'bold', fontSize: '11px' }}
                       />
                     </div>
 
@@ -1316,14 +1541,48 @@ export default function App() {
                         background: goldTradeSide === 'BUY' ? '#059669' : '#dc2626',
                         color: 'white',
                         border: 'none',
-                        padding: '8px 18px',
+                        padding: '8px 16px',
                         borderRadius: '6px',
                         cursor: 'pointer',
                         fontWeight: 'bold',
-                        fontSize: '13px',
+                        fontSize: '12px',
                       }}
                     >
-                      {tradeExecuting ? 'Executing...' : `⚡ Execute ${goldTradeSide} Order`}
+                      {tradeExecuting ? 'Executing...' : `⚡ Place ${goldTradeSide} Demo Trade`}
+                    </button>
+
+                    <button
+                      onClick={simulateHistoricalDemoTrades}
+                      disabled={demoSimulating}
+                      style={{
+                        background: '#312e81',
+                        color: '#c7d2fe',
+                        border: '1px solid #4338ca',
+                        padding: '8px 14px',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '12px',
+                      }}
+                    >
+                      {demoSimulating ? 'Simulating...' : `🤖 Simulate ${goldStrategy.toUpperCase()} Signals`}
+                    </button>
+
+                    <button
+                      onClick={clearHistoricalDemoTrades}
+                      style={{
+                        background: '#1f2937',
+                        color: '#94a3b8',
+                        border: '1px solid #374151',
+                        padding: '8px 12px',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '11px',
+                      }}
+                      title="Clear demo trade history"
+                    >
+                      🗑️ Clear
                     </button>
                   </div>
                 </div>
@@ -1335,6 +1594,177 @@ export default function App() {
                   </div>
                 )}
               </div>
+
+              {/* Dedicated Demo Trades Performance & Output Assessment Dashboard */}
+              {goldData.demo_assessment && (
+                <div style={{ background: '#0f172a', padding: '20px', borderRadius: '8px', border: '1px solid #1e3a8a', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <div>
+                      <h3 style={{ margin: 0, fontSize: '16px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        📊 Historical Demo Trades Journal & Output Assessment
+                      </h3>
+                      <div style={{ fontSize: '11px', color: '#60a5fa', marginTop: '2px' }}>
+                        Evaluation of placed demo trades across XAU/USD historical price series (Initial Capital: ${goldData.demo_assessment.initial_demo_capital.toLocaleString()})
+                      </div>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                      Total Trades: <strong style={{ color: '#f8fafc' }}>{goldData.demo_assessment.total_trades}</strong> (Open: <strong style={{ color: '#38bdf8' }}>{goldData.demo_assessment.open_trades}</strong> | Closed: <strong style={{ color: '#a855f7' }}>{goldData.demo_assessment.closed_trades}</strong>)
+                    </div>
+                  </div>
+
+                  {/* 5 Assessment KPI Cards */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px' }}>
+                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Net PnL / ROI</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: goldData.demo_assessment.net_pnl >= 0 ? '#10b981' : '#ef4444' }}>
+                        {goldData.demo_assessment.net_pnl >= 0 ? '+' : ''}${goldData.demo_assessment.net_pnl.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: '11px', color: goldData.demo_assessment.roi_pct >= 0 ? '#34d399' : '#f87171' }}>
+                        {goldData.demo_assessment.roi_pct >= 0 ? '+' : ''}{goldData.demo_assessment.roi_pct}% Return
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Win Rate (Closed)</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#f59e0b' }}>
+                        {goldData.demo_assessment.win_rate_pct}%
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>
+                        {goldData.demo_assessment.winning_trades} Wins / {goldData.demo_assessment.losing_trades} Losses
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Profit Factor</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#38bdf8' }}>
+                        {goldData.demo_assessment.profit_factor}x
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>
+                        Gross Profit / Gross Loss
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Max Drawdown</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#ef4444' }}>
+                        -${goldData.demo_assessment.max_drawdown_dollars.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>
+                        {goldData.demo_assessment.max_drawdown_pct.toFixed(2)}% of Peak
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Current Equity</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#a855f7' }}>
+                        ${goldData.demo_assessment.current_equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>
+                        Realized: ${goldData.demo_assessment.total_realized_pnl.toFixed(2)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Trade Journal Table */}
+                  {goldData.demo_assessment.trades && goldData.demo_assessment.trades.length > 0 ? (
+                    <div style={{ overflowX: 'auto' }}>
+                      <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '12px' }}>
+                        <thead>
+                          <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8' }}>
+                            <th style={{ padding: '8px 10px' }}>Trade ID</th>
+                            <th style={{ padding: '8px 10px' }}>Side</th>
+                            <th style={{ padding: '8px 10px' }}>Entry Bar</th>
+                            <th style={{ padding: '8px 10px' }}>Entry Price</th>
+                            <th style={{ padding: '8px 10px' }}>Exit/Mark Price</th>
+                            <th style={{ padding: '8px 10px' }}>Lots</th>
+                            <th style={{ padding: '8px 10px' }}>SL / TP</th>
+                            <th style={{ padding: '8px 10px' }}>Status</th>
+                            <th style={{ padding: '8px 10px' }}>PnL ($)</th>
+                            <th style={{ padding: '8px 10px' }}>Return</th>
+                            <th style={{ padding: '8px 10px' }}>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {goldData.demo_assessment.trades.map((dt) => {
+                            const pnlVal = dt.status === 'OPEN' ? dt.unrealized_pnl : dt.realized_pnl;
+                            return (
+                              <tr key={dt.trade_id} style={{ borderBottom: '1px solid #1e293b' }}>
+                                <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: '#38bdf8' }}>{dt.trade_id}</td>
+                                <td style={{ padding: '8px 10px', fontWeight: 'bold', color: dt.side === 'BUY' ? '#10b981' : '#ef4444' }}>
+                                  {dt.side === 'BUY' ? '▲ BUY' : '▼ SELL'}
+                                </td>
+                                <td style={{ padding: '8px 10px', color: '#cbd5e1' }}>{dt.time_label}</td>
+                                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>${dt.entry_price.toFixed(2)}</td>
+                                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>
+                                  ${dt.exit_price ? dt.exit_price.toFixed(2) : dt.current_price.toFixed(2)}
+                                  {dt.exit_time_label && <span style={{ fontSize: '10px', color: '#64748b', marginLeft: '4px' }}>({dt.exit_time_label})</span>}
+                                </td>
+                                <td style={{ padding: '8px 10px' }}>{dt.quantity}</td>
+                                <td style={{ padding: '8px 10px', fontSize: '11px', color: '#94a3b8' }}>
+                                  <span style={{ color: '#ef4444' }}>${dt.stop_loss}</span> / <span style={{ color: '#10b981' }}>${dt.take_profit}</span>
+                                </td>
+                                <td style={{ padding: '8px 10px' }}>
+                                  <span
+                                    style={{
+                                      fontSize: '10px',
+                                      padding: '2px 6px',
+                                      borderRadius: '4px',
+                                      fontWeight: 'bold',
+                                      background:
+                                        dt.status === 'CLOSED_PROFIT'
+                                          ? '#064e3b'
+                                          : dt.status === 'CLOSED_LOSS'
+                                          ? '#450a0a'
+                                          : '#1e293b',
+                                      color:
+                                        dt.status === 'CLOSED_PROFIT'
+                                          ? '#a7f3d0'
+                                          : dt.status === 'CLOSED_LOSS'
+                                          ? '#fca5a5'
+                                          : '#38bdf8',
+                                      border:
+                                        '1px solid ' +
+                                        (dt.status === 'CLOSED_PROFIT'
+                                          ? '#059669'
+                                          : dt.status === 'CLOSED_LOSS'
+                                          ? '#991b1b'
+                                          : '#0284c7'),
+                                    }}
+                                  >
+                                    {dt.status === 'CLOSED_PROFIT' ? `✅ TP HIT` : dt.status === 'CLOSED_LOSS' ? `❌ SL HIT` : `● OPEN`}
+                                  </span>
+                                </td>
+                                <td style={{ padding: '8px 10px', fontWeight: 'bold', fontFamily: 'monospace', color: pnlVal >= 0 ? '#10b981' : '#ef4444' }}>
+                                  {pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}
+                                </td>
+                                <td style={{ padding: '8px 10px', fontWeight: 'bold', color: dt.return_pct >= 0 ? '#10b981' : '#ef4444' }}>
+                                  {dt.return_pct >= 0 ? '+' : ''}{dt.return_pct}%
+                                </td>
+                                <td style={{ padding: '8px 10px' }}>
+                                  {dt.status === 'OPEN' ? (
+                                    <button
+                                      onClick={() => closeHistoricalDemoTrade(dt.trade_id)}
+                                      style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '3px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
+                                    >
+                                      Close
+                                    </button>
+                                  ) : (
+                                    <span style={{ fontSize: '10px', color: '#64748b' }}>{dt.exit_reason}</span>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div style={{ textAlign: 'center', padding: '16px', color: '#64748b', fontSize: '12px' }}>
+                      No demo trades placed yet. Click on any historical candle or use the Order Ticket above, or click "Auto-Simulate Strategy Signals"!
+                    </div>
+                  )}
+                </div>
+              )}
 
 
               {/* Machine Learning Forward Direction Forecast Cards */}

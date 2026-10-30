@@ -270,12 +270,28 @@ async def gold_trade_endpoint(request: Request):
     stop_loss = float(body.get("stop_loss", spot_px * 0.98))
     take_profit = float(body.get("take_profit", spot_px * 1.02))
 
+    coordinator.execution_engine.allow_short = True
     order = coordinator.execution_engine.submit_order(
         symbol="XAU/USD",
         side=side,
         quantity=qty,
         market_price=spot_px,
     )
+
+    # Record into demo trade journal as well
+    try:
+        res_current = gold_analyzer.analyze(timeframe="1h")
+        gold_analyzer.demo_trader.place_trade(
+            side=side_str,
+            candles=res_current.candles,
+            quantity=qty,
+            custom_entry_price=spot_px,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+    except Exception:
+        pass
+
     res = {
         "order": order.model_dump(mode="json"),
         "stop_loss": stop_loss,
@@ -283,6 +299,83 @@ async def gold_trade_endpoint(request: Request):
         "portfolio": coordinator.execution_engine.portfolio.model_dump(mode="json"),
     }
     return JSONResponse(res)
+
+
+async def gold_demo_trade_place_endpoint(request: Request):
+    """Place demo trade on a specific historical candle or latest spot price."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+
+    side = body.get("side", "BUY")
+    bar_index = body.get("bar_index", None)
+    qty = float(body.get("quantity", 1.0))
+    entry_px = float(body["entry_price"]) if "entry_price" in body else None
+    sl = float(body["stop_loss"]) if "stop_loss" in body else None
+    tp = float(body["take_profit"]) if "take_profit" in body else None
+    timeframe = body.get("timeframe", "1h")
+
+    res = gold_analyzer.analyze(timeframe=timeframe)
+    trade = gold_analyzer.demo_trader.place_trade(
+        side=side,
+        candles=res.candles,
+        bar_index=bar_index,
+        quantity=qty,
+        custom_entry_price=entry_px,
+        stop_loss=sl,
+        take_profit=tp,
+    )
+    assessment = gold_analyzer.demo_trader.get_assessment(res.candles)
+    return JSONResponse({
+        "trade": trade.model_dump(mode="json"),
+        "assessment": assessment.model_dump(mode="json"),
+    })
+
+
+async def gold_demo_trades_get_endpoint(request: Request):
+    """Get all current demo trades and quantitative assessment."""
+    if request.method == "DELETE":
+        gold_analyzer.demo_trader.clear()
+    res = gold_analyzer.analyze(timeframe="1h")
+    assessment = gold_analyzer.demo_trader.get_assessment(res.candles)
+    return JSONResponse(assessment.model_dump(mode="json"))
+
+
+async def gold_demo_simulate_endpoint(request: Request):
+    """Simulate placing demo trades across all strategy signals on historical chart."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    strategy = body.get("strategy", "ema")
+    timeframe = body.get("timeframe", "1h")
+    qty = float(body.get("quantity", 1.0))
+
+    res = gold_analyzer.analyze(timeframe=timeframe, active_strategy=strategy)
+    gold_analyzer.demo_trader.simulate_strategy_signals(res.candles, strategy_id=strategy, lot_size=qty)
+    assessment = gold_analyzer.demo_trader.get_assessment(res.candles)
+    return JSONResponse(assessment.model_dump(mode="json"))
+
+
+async def gold_demo_close_endpoint(request: Request):
+    """Manually close an open demo trade."""
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    trade_id = body.get("trade_id")
+    if not trade_id:
+        return JSONResponse({"error": "Missing trade_id"}, status_code=400)
+    res = gold_analyzer.analyze(timeframe="1h")
+    trade = gold_analyzer.demo_trader.close_trade(trade_id, res.candles)
+    if not trade:
+        return JSONResponse({"error": "Trade not found or already closed"}, status_code=404)
+    assessment = gold_analyzer.demo_trader.get_assessment(res.candles)
+    return JSONResponse({
+        "trade": trade.model_dump(mode="json"),
+        "assessment": assessment.model_dump(mode="json"),
+    })
 
 
 
@@ -299,6 +392,10 @@ routes = [
     Route("/api/v1/predict/live", live_predict_endpoint, methods=["GET", "POST"]),
     Route("/api/v1/gold/analyze", gold_analyze_endpoint, methods=["GET", "POST"]),
     Route("/api/v1/gold/trade", gold_trade_endpoint, methods=["POST"]),
+    Route("/api/v1/gold/demo-trade", gold_demo_trade_place_endpoint, methods=["POST"]),
+    Route("/api/v1/gold/demo-trades", gold_demo_trades_get_endpoint, methods=["GET", "DELETE"]),
+    Route("/api/v1/gold/demo-simulate", gold_demo_simulate_endpoint, methods=["POST"]),
+    Route("/api/v1/gold/demo-close", gold_demo_close_endpoint, methods=["POST"]),
     Route("/api/v1/orders", submit_order_endpoint, methods=["POST"]),
     Route("/api/v1/portfolio", get_portfolio_endpoint, methods=["GET"]),
     WebSocketRoute("/ws/market-feed", websocket_market_feed),

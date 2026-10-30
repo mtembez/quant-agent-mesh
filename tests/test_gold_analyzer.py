@@ -129,3 +129,79 @@ def test_api_gold_analyze_endpoint():
     assert d_post["timeframe"] == "4h"
     assert d_post["active_strategy_id"] == "bollinger"
     assert d_post["current_spot_price"] == 3985.50
+
+
+def test_spot_gold_demo_trader_and_endpoints():
+    """Verify Spot Gold historical demo trade placement, lifecycle evaluation, and assessment endpoints."""
+    client = TestClient(app)
+
+    # 1. Reset trades
+    res_del = client.delete("/api/v1/gold/demo-trades")
+    assert res_del.status_code == 200
+    d_init = res_del.json()
+    assert d_init["total_trades"] == 0
+
+    # 2. Place BUY demo trade on historical bar index 15
+    res_buy = client.post(
+        "/api/v1/gold/demo-trade",
+        json={
+            "side": "BUY",
+            "bar_index": 15,
+            "quantity": 2.0,
+            "entry_price": 3840.0,
+            "stop_loss": 3800.0,
+            "take_profit": 3950.0,
+        },
+    )
+    assert res_buy.status_code == 200
+    d_buy = res_buy.json()
+    assert d_buy["trade"]["side"] == "BUY"
+    assert d_buy["trade"]["bar_index"] == 15
+    assert d_buy["trade"]["quantity"] == 2.0
+    assert d_buy["trade"]["status"] in ["OPEN", "CLOSED_PROFIT", "CLOSED_LOSS"]
+    trade_id = d_buy["trade"]["trade_id"]
+
+    # 3. Place SELL demo trade on bar index 30
+    res_sell = client.post(
+        "/api/v1/gold/demo-trade",
+        json={
+            "side": "SELL",
+            "bar_index": 30,
+            "quantity": 1.0,
+            "entry_price": 3822.0,
+            "stop_loss": 3870.0,
+            "take_profit": 3750.0,
+        },
+    )
+    assert res_sell.status_code == 200
+    d_sell = res_sell.json()
+    assert d_sell["trade"]["side"] == "SELL"
+
+    # 4. Check assessment metrics
+    res_assess = client.get("/api/v1/gold/demo-trades")
+    assert res_assess.status_code == 200
+    d_assess = res_assess.json()
+    assert d_assess["total_trades"] == 2
+    assert "win_rate_pct" in d_assess
+    assert "net_pnl" in d_assess
+    assert "profit_factor" in d_assess
+    assert "current_equity" in d_assess
+
+    # 5. Simulate strategy signals across all historical candles
+    res_sim = client.post(
+        "/api/v1/gold/demo-simulate",
+        json={"strategy": "ema", "quantity": 1.5},
+    )
+    assert res_sim.status_code == 200
+    d_sim = res_sim.json()
+    assert d_sim["total_trades"] > 0
+    assert len(d_sim["trades"]) > 0
+
+    # 6. Test manual trade close if any trade is open
+    open_trades = [t for t in d_sim["trades"] if t["status"] == "OPEN"]
+    if open_trades:
+        target_id = open_trades[0]["trade_id"]
+        res_close = client.post("/api/v1/gold/demo-close", json={"trade_id": target_id})
+        assert res_close.status_code == 200
+        d_close = res_close.json()
+        assert d_close["trade"]["status"] in ["CLOSED_PROFIT", "CLOSED_LOSS"]
