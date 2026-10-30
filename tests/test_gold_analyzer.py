@@ -3,13 +3,19 @@
 import pytest
 from starlette.testclient import TestClient
 
-from analytics.gold_analyzer import SpotGoldAnalyzer, compute_parkinson_volatility, compute_garman_klass_volatility
+from analytics.gold_analyzer import (
+    SpotGoldAnalyzer,
+    compute_parkinson_volatility,
+    compute_garman_klass_volatility,
+    compute_rogers_satchell_volatility,
+    compute_yang_zhang_volatility,
+)
 from api.main import app
 import numpy as np
 
 
 def test_spot_gold_volatility_estimators():
-    """Verify mathematical calculation of Parkinson and Garman-Klass volatility."""
+    """Verify mathematical calculation of Parkinson, Garman-Klass, Rogers-Satchell, and Yang-Zhang volatility."""
     n = 50
     np.random.seed(42)
     close = 3980.0 + np.cumsum(np.random.randn(n) * 2.0)
@@ -23,6 +29,12 @@ def test_spot_gold_volatility_estimators():
     v_gk = compute_garman_klass_volatility(open_arr, high, low, close)
     assert v_gk > 0.0
 
+    v_rs = compute_rogers_satchell_volatility(open_arr, high, low, close)
+    assert v_rs > 0.0
+
+    v_yz = compute_yang_zhang_volatility(open_arr, high, low, close)
+    assert v_yz > 0.0
+
 
 def test_spot_gold_analyzer_strategy_overlays():
     """Verify strategy overlays and forward forecasts across all strategies."""
@@ -34,12 +46,19 @@ def test_spot_gold_analyzer_strategy_overlays():
             active_strategy=strat,
             custom_spot_price=3984.66,
             n_bars=60,
+            ema_fast=10,
+            ema_slow=20,
         )
 
         assert res.symbol == "XAU/USD"
         assert res.current_spot_price == 3984.66
         assert len(res.candles) == 60
         assert res.active_strategy_id == strat
+        assert res.rogers_satchell_volatility_pct > 0.0
+        assert res.yang_zhang_volatility_pct > 0.0
+        assert res.recommended_lot_size > 0.0
+        assert res.trailing_stop_loss > 0.0
+        assert res.take_profit_target > 0.0
 
         # Check strategy metrics presence
         assert "ema" in res.strategies
@@ -58,7 +77,7 @@ def test_spot_gold_analyzer_strategy_overlays():
 
 
 def test_api_gold_analyze_endpoint():
-    """Verify Starlette ASGI /api/v1/gold/analyze endpoint via GET and POST."""
+    """Verify Starlette ASGI /api/v1/gold/analyze and /api/v1/gold/trade endpoints."""
     client = TestClient(app)
 
     # Test GET with default params
@@ -68,16 +87,32 @@ def test_api_gold_analyze_endpoint():
     assert d["symbol"] == "XAU/USD"
     assert d["current_spot_price"] == 3984.66
     assert d["active_strategy_id"] == "ema"
+    assert "rogers_satchell_volatility_pct" in d
+    assert "yang_zhang_volatility_pct" in d
+    assert "recommended_lot_size" in d
     assert "forecast_1h" in d
     assert "candles" in d
 
-    # Test POST with custom strategy
+    # Test POST with custom strategy and parameters
     res_post = client.post(
         "/api/v1/gold/analyze",
-        json={"timeframe": "4h", "strategy": "bollinger", "spot_price": 3985.50},
+        json={"timeframe": "4h", "strategy": "bollinger", "spot_price": 3985.50, "boll_window": 25, "boll_std": 2.2},
     )
     assert res_post.status_code == 200
     d_post = res_post.json()
+    assert d_post["timeframe"] == "4h"
+
+    # Test POST trade execution
+    res_trade = client.post(
+        "/api/v1/gold/trade",
+        json={"side": "BUY", "quantity": 1.0, "market_price": 3984.66, "stop_loss": 3960.0, "take_profit": 4020.0},
+    )
+    assert res_trade.status_code == 200
+    d_trade = res_trade.json()
+    assert d_trade["order"]["symbol"] == "XAU/USD"
+    assert d_trade["order"]["side"] == "BUY"
+    assert "portfolio" in d_trade
+
     assert d_post["timeframe"] == "4h"
     assert d_post["active_strategy_id"] == "bollinger"
     assert d_post["current_spot_price"] == 3985.50

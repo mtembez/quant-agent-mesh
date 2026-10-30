@@ -16,11 +16,26 @@ export default function App() {
 
   // Spot Gold Terminal State (Calibrated to TradingView OANDA Spot Gold ~$3,984.66)
   const [goldData, setGoldData] = useState(null);
-  const [goldTimeframe, setGoldTimeframe] = useState('1h'); // 1h | 4h | 1D
+  const [goldTimeframe, setGoldTimeframe] = useState('1h'); // 15m | 1h | 4h | 1D
   const [goldStrategy, setGoldStrategy] = useState('ema'); // ema | bollinger | rsi | ou
   const [goldSpotPrice, setGoldSpotPrice] = useState(3984.66);
   const [goldAutoRefresh, setGoldAutoRefresh] = useState(true);
   const [loadingGold, setLoadingGold] = useState(false);
+
+  // Dynamic Strategy Parameter Tuners
+  const [goldEmaFast, setGoldEmaFast] = useState(12);
+  const [goldEmaSlow, setGoldEmaSlow] = useState(26);
+  const [goldBollWindow, setGoldBollWindow] = useState(20);
+  const [goldBollStd, setGoldBollStd] = useState(2.0);
+  const [goldRsiPeriod, setGoldRsiPeriod] = useState(14);
+  const [showTuner, setShowTuner] = useState(false);
+  const [hoveredCandle, setHoveredCandle] = useState(null);
+
+  // Spot Gold Trade Ticket & Kelly Execution
+  const [goldTradeQty, setGoldTradeQty] = useState(1.0);
+  const [goldTradeSide, setGoldTradeSide] = useState('BUY');
+  const [tradeExecuting, setTradeExecuting] = useState(false);
+  const [tradeToast, setTradeToast] = useState(null);
 
   // Live Auto-Learning Predictor State
   const [livePrediction, setLivePrediction] = useState(null);
@@ -47,13 +62,13 @@ export default function App() {
   useEffect(() => {
     fetchPortfolio();
     fetchStrategies();
-    fetchGoldAnalysis(goldTimeframe, goldStrategy, goldSpotPrice);
+    fetchGoldAnalysis();
     fetchLivePrediction(livePairKey);
 
     const interval = setInterval(() => {
       fetchPortfolio();
       if (goldAutoRefresh && activeTab === 'gold') {
-        fetchGoldAnalysis(goldTimeframe, goldStrategy, goldSpotPrice);
+        fetchGoldAnalysis();
       }
       if (autoRefresh && activeTab === 'predict') {
         fetchLivePrediction(livePairKey);
@@ -61,7 +76,20 @@ export default function App() {
     }, 3500);
 
     return () => clearInterval(interval);
-  }, [goldAutoRefresh, autoRefresh, livePairKey, goldTimeframe, goldStrategy, goldSpotPrice, activeTab]);
+  }, [
+    goldAutoRefresh,
+    autoRefresh,
+    livePairKey,
+    goldTimeframe,
+    goldStrategy,
+    goldSpotPrice,
+    goldEmaFast,
+    goldEmaSlow,
+    goldBollWindow,
+    goldBollStd,
+    goldRsiPeriod,
+    activeTab,
+  ]);
 
   const fetchPortfolio = async () => {
     try {
@@ -83,13 +111,35 @@ export default function App() {
     } catch (e) {}
   };
 
-  const fetchGoldAnalysis = async (tf = goldTimeframe, strat = goldStrategy, px = goldSpotPrice) => {
+  const fetchGoldAnalysis = async (
+    tf = goldTimeframe,
+    strat = goldStrategy,
+    px = goldSpotPrice,
+    fast = goldEmaFast,
+    slow = goldEmaSlow,
+    bWin = goldBollWindow,
+    bStd = goldBollStd,
+    rsiP = goldRsiPeriod
+  ) => {
     setLoadingGold(true);
     try {
-      const res = await fetch(`/api/v1/gold/analyze?timeframe=${encodeURIComponent(tf)}&strategy=${encodeURIComponent(strat)}&spot_price=${encodeURIComponent(px)}`);
+      const params = new URLSearchParams({
+        timeframe: tf,
+        strategy: strat,
+        spot_price: px.toString(),
+        ema_fast: fast.toString(),
+        ema_slow: slow.toString(),
+        boll_window: bWin.toString(),
+        boll_std: bStd.toString(),
+        rsi_period: rsiP.toString(),
+      });
+      const res = await fetch(`/api/v1/gold/analyze?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
         setGoldData(data);
+        if (data.recommended_lot_size && (!goldTradeQty || goldTradeQty === 1.0)) {
+          setGoldTradeQty(data.recommended_lot_size);
+        }
         setStatusMessage(`Spot Gold analyzed [${tf.toUpperCase()}] -> Active Model: ${strat.toUpperCase()} | Signal: ${data.strategies[strat]?.current_signal || 'HOLD'}`);
       }
     } catch (e) {
@@ -98,6 +148,64 @@ export default function App() {
       setLoadingGold(false);
     }
   };
+
+  const exportGoldCsv = () => {
+    if (!goldData || !goldData.candles) return;
+    const headers = ['Timestamp', 'TimeLabel', 'Open', 'High', 'Low', 'Close', 'Volume', 'FastEMA', 'SlowEMA', 'BollUpper', 'BollMid', 'BollLower', 'Signal'];
+    const rows = goldData.candles.map((c) => [
+      c.timestamp,
+      c.time_label,
+      c.open,
+      c.high,
+      c.low,
+      c.close,
+      c.volume,
+      c.ema_fast || '',
+      c.ema_slow || '',
+      c.boll_upper || '',
+      c.boll_mid || '',
+      c.boll_lower || '',
+      c.active_signal === 1 ? 'BUY' : c.active_signal === -1 ? 'SELL' : 'HOLD',
+    ]);
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `gold_terminal_${goldTimeframe}_${goldStrategy}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setStatusMessage(`Exported ${goldData.candles.length} candles to CSV successfully`);
+  };
+
+  const executeSpotGoldTrade = async () => {
+    setTradeExecuting(true);
+    try {
+      const res = await fetch('/api/v1/gold/trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          side: goldTradeSide,
+          quantity: parseFloat(goldTradeQty) || 1.0,
+          market_price: goldData?.current_spot_price || goldSpotPrice,
+          stop_loss: goldData?.trailing_stop_loss || goldSpotPrice * 0.98,
+          take_profit: goldData?.take_profit_target || goldSpotPrice * 1.02,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPortfolio(data.portfolio);
+        setTradeToast(`Order #${data.order.order_id} FILLED: ${data.order.side} ${data.order.quantity} XAU/USD @ $${data.order.filled_price.toFixed(2)} | Stop-Loss: $${data.stop_loss.toFixed(2)} | Target: $${data.take_profit.toFixed(2)}`);
+        setStatusMessage(`Spot Gold order filled: ${data.order.side} ${data.order.quantity} XAU/USD`);
+        setTimeout(() => setTradeToast(null), 6000);
+      }
+    } catch (e) {
+      setStatusMessage('Gold trade execution failed');
+    } finally {
+      setTradeExecuting(false);
+    }
+  };
+
 
   const fetchLivePrediction = async (pairKey = livePairKey) => {
     setLoadingPrediction(true);
@@ -314,139 +422,224 @@ export default function App() {
     }
 
     return (
-      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: '#0a0f1d', borderRadius: '8px', border: '1px solid #1e293b' }}>
-        {/* Horizontal Price Grid Lines */}
-        {[0, 0.25, 0.5, 0.75, 1.0].map((frac, idx) => {
-          const val = minY + frac * rangeY;
-          const y = getY(val);
-          return (
-            <g key={idx}>
-              <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="#1e293b" strokeDasharray="3 3" />
-              <text x={padX - 8} y={y + 4} fill="#64748b" fontSize="10" textAnchor="end" fontFamily="monospace">
-                ${val.toFixed(1)}
+      <div>
+        {/* Interactive Candle Inspector HUD Banner */}
+        <div style={{ background: '#0a0f1d', border: '1px solid #1e293b', borderRadius: '6px', padding: '8px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', fontSize: '11px', fontFamily: 'monospace', color: '#cbd5e1', marginBottom: '10px' }}>
+          {hoveredCandle ? (
+            <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>BAR: {hoveredCandle.time_label}</span>
+              <span>O: <strong style={{ color: '#f8fafc' }}>${hoveredCandle.open.toFixed(2)}</strong></span>
+              <span>H: <strong style={{ color: '#10b981' }}>${hoveredCandle.high.toFixed(2)}</strong></span>
+              <span>L: <strong style={{ color: '#ef4444' }}>${hoveredCandle.low.toFixed(2)}</strong></span>
+              <span>C: <strong style={{ color: hoveredCandle.close >= hoveredCandle.open ? '#10b981' : '#ef4444' }}>${hoveredCandle.close.toFixed(2)}</strong></span>
+              <span>Vol: <strong style={{ color: '#38bdf8' }}>{hoveredCandle.volume.toLocaleString()}</strong></span>
+              {hoveredCandle.ema_fast && <span style={{ color: '#06b6d4' }}>EMA({goldEmaFast}): ${hoveredCandle.ema_fast.toFixed(2)}</span>}
+              {hoveredCandle.ema_slow && <span style={{ color: '#a855f7' }}>EMA({goldEmaSlow}): ${hoveredCandle.ema_slow.toFixed(2)}</span>}
+              {hoveredCandle.boll_upper && <span style={{ color: '#ef4444' }}>Upper: ${hoveredCandle.boll_upper.toFixed(2)}</span>}
+              {hoveredCandle.boll_lower && <span style={{ color: '#10b981' }}>Lower: ${hoveredCandle.boll_lower.toFixed(2)}</span>}
+            </div>
+          ) : (
+            <div style={{ color: '#64748b', display: 'flex', gap: '12px' }}>
+              <span>💡 Hover over any candle for micro-second OHLCV & overlay inspection</span>
+              <span>• Active Strategy: <strong style={{ color: '#10b981' }}>{goldStrategy.toUpperCase()}</strong></span>
+              <span>• Forecast Cone: <strong style={{ color: '#ec4899' }}>95% Confidence Bounds</strong></span>
+            </div>
+          )}
+          <div style={{ color: '#94a3b8', fontSize: '10px' }}>
+            Timeframe: <strong>{goldTimeframe.toUpperCase()}</strong> | Points: <strong>{candles.length} Candles</strong>
+          </div>
+        </div>
+
+        <svg
+          width="100%"
+          height={height}
+          viewBox={`0 0 ${width} ${height}`}
+          onMouseLeave={() => setHoveredCandle(null)}
+          style={{ background: '#0a0f1d', borderRadius: '8px', border: '1px solid #1e293b' }}
+        >
+          {/* Horizontal Price Grid Lines */}
+          {[0, 0.25, 0.5, 0.75, 1.0].map((frac, idx) => {
+            const val = minY + frac * rangeY;
+            const y = getY(val);
+            return (
+              <g key={idx}>
+                <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="#1e293b" strokeDasharray="3 3" />
+                <text x={padX - 8} y={y + 4} fill="#64748b" fontSize="10" textAnchor="end" fontFamily="monospace">
+                  ${val.toFixed(1)}
+                </text>
+              </g>
+            );
+          })}
+
+          {/* Strategy Layer: Bollinger Bands Channel Fill */}
+          {goldStrategy === 'bollinger' && bollChannelPolygon && (
+            <path d={bollChannelPolygon} fill="rgba(59, 130, 246, 0.08)" stroke="none" />
+          )}
+
+          {/* Strategy Layer: Bollinger Band Upper & Lower Lines */}
+          {goldStrategy === 'bollinger' && (
+            <>
+              <path d={bollUpperPath} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 2" />
+              <path d={bollMidPath} fill="none" stroke="#3b82f6" strokeWidth="1.5" />
+              <path d={bollLowerPath} fill="none" stroke="#10b981" strokeWidth="1.5" strokeDasharray="4 2" />
+            </>
+          )}
+
+          {/* Strategy Layer: O-U Stationary Equilibrium Line */}
+          {goldStrategy === 'ou' && ouEquilibriumY !== null && (
+            <g>
+              <line x1={padX} y1={ouEquilibriumY} x2={width - padX} y2={ouEquilibriumY} stroke="#eab308" strokeWidth="2" strokeDasharray="6 4" />
+              <text x={width - padX + 5} y={ouEquilibriumY + 4} fill="#eab308" fontSize="11" fontFamily="monospace" fontWeight="bold">
+                μ Equilibrium (${candles[0].ou_equilibrium})
               </text>
             </g>
-          );
-        })}
+          )}
 
-        {/* Strategy Layer: Bollinger Bands Channel Fill */}
-        {goldStrategy === 'bollinger' && bollChannelPolygon && (
-          <path d={bollChannelPolygon} fill="rgba(59, 130, 246, 0.08)" stroke="none" />
-        )}
+          {/* Candlesticks (High/Low Wick + Open/Close Body) */}
+          {candles.map((c, i) => {
+            const cx = getX(i);
+            const yHigh = getY(c.high);
+            const yLow = getY(c.low);
+            const yOpen = getY(c.open);
+            const yClose = getY(c.close);
 
-        {/* Strategy Layer: Bollinger Band Upper & Lower Lines */}
-        {goldStrategy === 'bollinger' && (
-          <>
-            <path d={bollUpperPath} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 2" />
-            <path d={bollMidPath} fill="none" stroke="#3b82f6" strokeWidth="1.5" />
-            <path d={bollLowerPath} fill="none" stroke="#10b981" strokeWidth="1.5" strokeDasharray="4 2" />
-          </>
-        )}
+            const isBull = c.close >= c.open;
+            const color = isBull ? '#10b981' : '#ef4444';
+            const topBody = Math.min(yOpen, yClose);
+            const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
 
-        {/* Strategy Layer: O-U Stationary Equilibrium Line */}
-        {goldStrategy === 'ou' && ouEquilibriumY !== null && (
-          <g>
-            <line x1={padX} y1={ouEquilibriumY} x2={width - padX} y2={ouEquilibriumY} stroke="#eab308" strokeWidth="2" strokeDasharray="6 4" />
-            <text x={width - padX + 5} y={ouEquilibriumY + 4} fill="#eab308" fontSize="11" fontFamily="monospace" fontWeight="bold">
-              μ Equilibrium (${candles[0].ou_equilibrium})
-            </text>
-          </g>
-        )}
+            return (
+              <g
+                key={i}
+                onMouseEnter={() => setHoveredCandle(c)}
+                style={{ cursor: 'crosshair' }}
+              >
+                {/* Wick */}
+                <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={color} strokeWidth="1.2" />
+                {/* Body */}
+                <rect
+                  x={cx - candleWidth / 2}
+                  y={topBody}
+                  width={candleWidth}
+                  height={bodyHeight}
+                  fill={isBull ? '#065f46' : '#7f1d1d'}
+                  stroke={color}
+                  strokeWidth="1.2"
+                  rx="1"
+                />
 
-        {/* Candlesticks (High/Low Wick + Open/Close Body) */}
-        {candles.map((c, i) => {
-          const cx = getX(i);
-          const yHigh = getY(c.high);
-          const yLow = getY(c.low);
-          const yOpen = getY(c.open);
-          const yClose = getY(c.close);
+                {/* Active Strategy Signal Marker */}
+                {c.active_signal === 1 && (
+                  <polygon points={`${cx},${yLow + 12} ${cx - 5},${yLow + 20} ${cx + 5},${yLow + 20}`} fill="#10b981" />
+                )}
+                {c.active_signal === -1 && (
+                  <polygon points={`${cx},${yHigh - 12} ${cx - 5},${yHigh - 20} ${cx + 5},${yHigh - 20}`} fill="#ef4444" />
+                )}
+              </g>
+            );
+          })}
 
-          const isBull = c.close >= c.open;
-          const color = isBull ? '#10b981' : '#ef4444';
-          const topBody = Math.min(yOpen, yClose);
-          const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
+          {/* Strategy Layer: Dual EMA Fast & Slow Lines */}
+          {goldStrategy === 'ema' && (
+            <>
+              <path d={emaFastPath} fill="none" stroke="#06b6d4" strokeWidth="2" />
+              <path d={emaSlowPath} fill="none" stroke="#a855f7" strokeWidth="2" />
+            </>
+          )}
 
-          return (
+          {/* Transition Divider (NOW) */}
+          <line x1={nowCoord.x} y1={padY} x2={nowCoord.x} y2={height - padY} stroke="#f97316" strokeDasharray="3 3" strokeWidth="1.8" />
+          <circle cx={nowCoord.x} cy={nowCoord.y} r="6" fill="#f97316" stroke="#fff" strokeWidth="2" />
+          <text x={nowCoord.x - 14} y={padY - 8} fill="#f97316" fontSize="11" fontWeight="bold">NOW</text>
+
+          {/* Forward Machine Learning 95% Confidence Cone */}
+          <path d={conePolygon} fill="rgba(236, 72, 153, 0.16)" stroke="none" />
+
+          {/* Forward ML Trajectory Path */}
+          <path d={trajPath} fill="none" stroke="#ec4899" strokeWidth="2.5" strokeDasharray="5 3" />
+
+          {/* Forward Trajectory Milestone Dots */}
+          {trajCoords.slice(1).map((c, i) => (
             <g key={i}>
-              {/* Wick */}
-              <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={color} strokeWidth="1.2" />
-              {/* Body */}
-              <rect
-                x={cx - candleWidth / 2}
-                y={topBody}
-                width={candleWidth}
-                height={bodyHeight}
-                fill={isBull ? '#065f46' : '#7f1d1d'}
-                stroke={color}
-                strokeWidth="1.2"
-                rx="1"
-              />
-
-              {/* Active Strategy Signal Marker */}
-              {c.active_signal === 1 && (
-                <polygon points={`${cx},${yLow + 12} ${cx - 5},${yLow + 20} ${cx + 5},${yLow + 20}`} fill="#10b981" />
-              )}
-              {c.active_signal === -1 && (
-                <polygon points={`${cx},${yHigh - 12} ${cx - 5},${yHigh - 20} ${cx + 5},${yHigh - 20}`} fill="#ef4444" />
-              )}
+              <circle cx={c.x} cy={c.y} r="4" fill="#ec4899" stroke="#fff" strokeWidth="1" />
+              <text x={c.x - 8} y={height - 12} fill="#94a3b8" fontSize="10" fontFamily="monospace">
+                +{traj[i].step_hour}h
+              </text>
             </g>
-          );
-        })}
+          ))}
 
-        {/* Strategy Layer: Dual EMA Fast & Slow Lines */}
-        {goldStrategy === 'ema' && (
-          <>
-            <path d={emaFastPath} fill="none" stroke="#06b6d4" strokeWidth="2" />
-            <path d={emaSlowPath} fill="none" stroke="#a855f7" strokeWidth="2" />
-          </>
-        )}
+          {/* Interactive Crosshair & Y Axis Tag when candle hovered */}
+          {hoveredCandle && (
+            <g>
+              <line
+                x1={getX(candles.indexOf(hoveredCandle))}
+                y1={padY}
+                x2={getX(candles.indexOf(hoveredCandle))}
+                y2={height - padY}
+                stroke="#64748b"
+                strokeDasharray="2 2"
+                strokeWidth="1"
+              />
+              <line
+                x1={padX}
+                y1={getY(hoveredCandle.close)}
+                x2={width - padX}
+                y2={getY(hoveredCandle.close)}
+                stroke="#64748b"
+                strokeDasharray="2 2"
+                strokeWidth="1"
+              />
+              <rect
+                x={padX - 54}
+                y={getY(hoveredCandle.close) - 8}
+                width="50"
+                height="16"
+                fill="#1e293b"
+                rx="3"
+                stroke="#64748b"
+                strokeWidth="1"
+              />
+              <text
+                x={padX - 8}
+                y={getY(hoveredCandle.close) + 4}
+                fill="#f8fafc"
+                fontSize="10"
+                textAnchor="end"
+                fontFamily="monospace"
+                fontWeight="bold"
+              >
+                ${hoveredCandle.close.toFixed(1)}
+              </text>
+            </g>
+          )}
 
-        {/* Transition Divider (NOW) */}
-        <line x1={nowCoord.x} y1={padY} x2={nowCoord.x} y2={height - padY} stroke="#f97316" strokeDasharray="3 3" strokeWidth="1.8" />
-        <circle cx={nowCoord.x} cy={nowCoord.y} r="6" fill="#f97316" stroke="#fff" strokeWidth="2" />
-        <text x={nowCoord.x - 14} y={padY - 8} fill="#f97316" fontSize="11" fontWeight="bold">NOW</text>
+          {/* Top Legends */}
+          <text x={padX} y={20} fill="#f8fafc" fontSize="12" fontWeight="bold">
+            XAU/USD Live Spot Candles ({goldTimeframe.toUpperCase()})
+          </text>
 
-        {/* Forward Machine Learning 95% Confidence Cone */}
-        <path d={conePolygon} fill="rgba(236, 72, 153, 0.16)" stroke="none" />
+          {goldStrategy === 'ema' && (
+            <g>
+              <text x={padX + 260} y={20} fill="#06b6d4" fontSize="11" fontWeight="bold">● Fast EMA ({goldEmaFast})</text>
+              <text x={padX + 380} y={20} fill="#a855f7" fontSize="11" fontWeight="bold">● Slow EMA ({goldEmaSlow})</text>
+            </g>
+          )}
 
-        {/* Forward ML Trajectory Path */}
-        <path d={trajPath} fill="none" stroke="#ec4899" strokeWidth="2.5" strokeDasharray="5 3" />
+          {goldStrategy === 'bollinger' && (
+            <g>
+              <text x={padX + 260} y={20} fill="#ef4444" fontSize="11" fontWeight="bold">● Upper Band</text>
+              <text x={padX + 370} y={20} fill="#3b82f6" fontSize="11" fontWeight="bold">● {goldBollWindow}-SMA</text>
+              <text x={padX + 450} y={20} fill="#10b981" fontSize="11" fontWeight="bold">● Lower Band</text>
+            </g>
+          )}
 
-        {/* Forward Trajectory Milestone Dots */}
-        {trajCoords.slice(1).map((c, i) => (
-          <g key={i}>
-            <circle cx={c.x} cy={c.y} r="4" fill="#ec4899" stroke="#fff" strokeWidth="1" />
-            <text x={c.x - 8} y={height - 12} fill="#94a3b8" fontSize="10" fontFamily="monospace">
-              +{traj[i].step_hour}h
-            </text>
-          </g>
-        ))}
-
-        {/* Top Legends */}
-        <text x={padX} y={20} fill="#f8fafc" fontSize="12" fontWeight="bold">
-          XAU/USD Live Spot Candles ({goldTimeframe.toUpperCase()})
-        </text>
-
-        {goldStrategy === 'ema' && (
-          <g>
-            <text x={padX + 260} y={20} fill="#06b6d4" fontSize="11" fontWeight="bold">● Fast EMA (12)</text>
-            <text x={padX + 380} y={20} fill="#a855f7" fontSize="11" fontWeight="bold">● Slow EMA (26)</text>
-          </g>
-        )}
-
-        {goldStrategy === 'bollinger' && (
-          <g>
-            <text x={padX + 260} y={20} fill="#ef4444" fontSize="11" fontWeight="bold">● Upper Band</text>
-            <text x={padX + 370} y={20} fill="#3b82f6" fontSize="11" fontWeight="bold">● 20-SMA</text>
-            <text x={padX + 450} y={20} fill="#10b981" fontSize="11" fontWeight="bold">● Lower Band</text>
-          </g>
-        )}
-
-        <text x={nowCoord.x + 18} y={20} fill="#ec4899" fontSize="12" fontWeight="bold">
-          ► ML Forward Horizon Forecast & 95% Confidence Cone
-        </text>
-      </svg>
+          <text x={nowCoord.x + 18} y={20} fill="#ec4899" fontSize="12" fontWeight="bold">
+            ► ML Forward Horizon Forecast & 95% Confidence Cone
+          </text>
+        </svg>
+      </div>
     );
+
   };
 
   // Helper for live pairs prediction chart
@@ -601,10 +794,11 @@ export default function App() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
           {/* Top Gold Controls & Timeframe Bar (Matching OANDA / TradingView Tabs) */}
           <div style={{ background: '#111827', padding: '16px 20px', borderRadius: '8px', border: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-            {/* Timeframe Switcher (1h, 4h, 1D) */}
+            {/* Timeframe Switcher (15m, 1h, 4h, 1D) */}
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <span style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold' }}>Timeframe:</span>
               {[
+                { id: '15m', label: '15m (Scalp)' },
                 { id: '1h', label: '1h (Hourly)' },
                 { id: '4h', label: '4h (4-Hour)' },
                 { id: '1D', label: '1D (Daily)' },
@@ -613,10 +807,10 @@ export default function App() {
                   key={tf.id}
                   onClick={() => {
                     setGoldTimeframe(tf.id);
-                    fetchGoldAnalysis(tf.id, goldStrategy, goldSpotPrice);
+                    fetchGoldAnalysis(tf.id, goldStrategy, goldSpotPrice, goldEmaFast, goldEmaSlow, goldBollWindow, goldBollStd, goldRsiPeriod);
                   }}
                   style={{
-                    padding: '6px 14px',
+                    padding: '6px 12px',
                     borderRadius: '5px',
                     border: '1px solid ' + (goldTimeframe === tf.id ? '#10b981' : '#374151'),
                     background: goldTimeframe === tf.id ? '#065f46' : '#1f2937',
@@ -631,22 +825,54 @@ export default function App() {
               ))}
             </div>
 
-            {/* Custom Benchmark Spot Price Input */}
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            {/* Strategy Parameter Tuner, Export CSV, and Benchmark Spot Reference */}
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => setShowTuner(!showTuner)}
+                style={{
+                  background: showTuner ? '#4338ca' : '#1f2937',
+                  color: showTuner ? '#e0e7ff' : '#cbd5e1',
+                  border: '1px solid ' + (showTuner ? '#6366f1' : '#374151'),
+                  padding: '6px 12px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                }}
+              >
+                ⚙️ {showTuner ? 'Hide Tuner' : 'Strategy Tuner'}
+              </button>
+
+              <button
+                onClick={exportGoldCsv}
+                style={{
+                  background: '#1e293b',
+                  color: '#38bdf8',
+                  border: '1px solid #0284c7',
+                  padding: '6px 12px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                }}
+              >
+                📥 Export CSV
+              </button>
+
               <label style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold' }}>Spot Reference ($):</label>
               <input
                 type="number"
                 step="0.01"
                 value={goldSpotPrice}
                 onChange={(e) => setGoldSpotPrice(parseFloat(e.target.value) || 3984.66)}
-                style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '110px', fontWeight: 'bold' }}
+                style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '105px', fontWeight: 'bold' }}
               />
               <button
-                onClick={() => fetchGoldAnalysis(goldTimeframe, goldStrategy, goldSpotPrice)}
+                onClick={() => fetchGoldAnalysis()}
                 disabled={loadingGold}
                 style={{ background: '#059669', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
               >
-                {loadingGold ? 'Analyzing...' : '⚡ Refresh Analysis'}
+                {loadingGold ? 'Analyzing...' : '⚡ Refresh'}
               </button>
               <button
                 onClick={() => setGoldAutoRefresh(!goldAutoRefresh)}
@@ -666,6 +892,56 @@ export default function App() {
             </div>
           </div>
 
+          {/* Strategy Parameter Tuner Drawer */}
+          {showTuner && (
+            <div style={{ background: '#0f172a', padding: '16px 20px', borderRadius: '8px', border: '1px solid #334155', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', fontSize: '12px' }}>
+              <div>
+                <label style={{ color: '#06b6d4', fontWeight: 'bold' }}>Fast EMA Span: {goldEmaFast}</label>
+                <input
+                  type="range"
+                  min="5"
+                  max="30"
+                  value={goldEmaFast}
+                  onChange={(e) => setGoldEmaFast(parseInt(e.target.value))}
+                  style={{ width: '100%', marginTop: '6px' }}
+                />
+              </div>
+              <div>
+                <label style={{ color: '#a855f7', fontWeight: 'bold' }}>Slow EMA Span: {goldEmaSlow}</label>
+                <input
+                  type="range"
+                  min="20"
+                  max="60"
+                  value={goldEmaSlow}
+                  onChange={(e) => setGoldEmaSlow(parseInt(e.target.value))}
+                  style={{ width: '100%', marginTop: '6px' }}
+                />
+              </div>
+              <div>
+                <label style={{ color: '#38bdf8', fontWeight: 'bold' }}>Bollinger Window: {goldBollWindow} (Std: {goldBollStd}σ)</label>
+                <input
+                  type="range"
+                  min="10"
+                  max="40"
+                  value={goldBollWindow}
+                  onChange={(e) => setGoldBollWindow(parseInt(e.target.value))}
+                  style={{ width: '100%', marginTop: '6px' }}
+                />
+              </div>
+              <div>
+                <label style={{ color: '#f59e0b', fontWeight: 'bold' }}>RSI Period: {goldRsiPeriod}</label>
+                <input
+                  type="range"
+                  min="7"
+                  max="28"
+                  value={goldRsiPeriod}
+                  onChange={(e) => setGoldRsiPeriod(parseInt(e.target.value))}
+                  style={{ width: '100%', marginTop: '6px' }}
+                />
+              </div>
+            </div>
+          )}
+
           {goldData && (
             <>
               {/* Hero Spot Gold Price & Microstructure Cards */}
@@ -681,12 +957,14 @@ export default function App() {
                 </div>
 
                 <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Parkinson & GK Volatility</div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '4px', color: '#38bdf8' }}>
-                    {goldData.parkinson_volatility_pct}% <span style={{ fontSize: '12px', color: '#94a3b8' }}>Parkinson</span>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Microstructure Volatilities</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#38bdf8' }}>
+                    {goldData.parkinson_volatility_pct}% <span style={{ fontSize: '11px', color: '#94a3b8' }}>Parkinson (σ_P)</span>
                   </div>
-                  <div style={{ fontSize: '12px', color: '#a855f7', marginTop: '4px' }}>
-                    Garman-Klass: <strong>{goldData.garman_klass_volatility_pct}%</strong>
+                  <div style={{ fontSize: '11px', color: '#a855f7', marginTop: '4px', display: 'flex', justifyContent: 'space-between' }}>
+                    <span>GK: <strong>{goldData.garman_klass_volatility_pct}%</strong></span>
+                    <span>RS: <strong>{goldData.rogers_satchell_volatility_pct}%</strong></span>
+                    <span>YZ: <strong>{goldData.yang_zhang_volatility_pct}%</strong></span>
                   </div>
                 </div>
 
@@ -815,6 +1093,91 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* Spot Gold Direct Execution & Dynamic Kelly Risk Sizing Panel */}
+              <div style={{ background: '#111827', padding: '18px 20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                  <div>
+                    <h3 style={{ margin: 0, fontSize: '15px', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      ⚡ Instant Spot Gold Order Ticket & Kelly Risk Sizer
+                    </h3>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+                      Optimal Position Size: <strong style={{ color: '#10b981' }}>{goldData.recommended_lot_size} Lots</strong> (Fractional Kelly) | Trailing Stop: <strong style={{ color: '#ef4444' }}>${goldData.trailing_stop_loss}</strong> | Target: <strong style={{ color: '#38bdf8' }}>${goldData.take_profit_target}</strong>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', borderRadius: '6px', overflow: 'hidden', border: '1px solid #374151' }}>
+                      <button
+                        onClick={() => setGoldTradeSide('BUY')}
+                        style={{
+                          background: goldTradeSide === 'BUY' ? '#059669' : '#1f2937',
+                          color: goldTradeSide === 'BUY' ? '#fff' : '#94a3b8',
+                          border: 'none',
+                          padding: '8px 16px',
+                          cursor: 'pointer',
+                          fontWeight: 'bold',
+                          fontSize: '12px',
+                        }}
+                      >
+                        BUY (Long)
+                      </button>
+                      <button
+                        onClick={() => setGoldTradeSide('SELL')}
+                        style={{
+                          background: goldTradeSide === 'SELL' ? '#dc2626' : '#1f2937',
+                          color: goldTradeSide === 'SELL' ? '#fff' : '#94a3b8',
+                          border: 'none',
+                          padding: '8px 16px',
+                          cursor: 'pointer',
+                          fontWeight: 'bold',
+                          fontSize: '12px',
+                        }}
+                      >
+                        SELL (Short)
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <label style={{ fontSize: '12px', color: '#94a3b8' }}>Lots:</label>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0.1"
+                        max="20.0"
+                        value={goldTradeQty}
+                        onChange={(e) => setGoldTradeQty(parseFloat(e.target.value) || 1.0)}
+                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '70px', fontWeight: 'bold' }}
+                      />
+                    </div>
+
+                    <button
+                      onClick={executeSpotGoldTrade}
+                      disabled={tradeExecuting}
+                      style={{
+                        background: goldTradeSide === 'BUY' ? '#059669' : '#dc2626',
+                        color: 'white',
+                        border: 'none',
+                        padding: '8px 18px',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '13px',
+                      }}
+                    >
+                      {tradeExecuting ? 'Executing...' : `⚡ Execute ${goldTradeSide} Order`}
+                    </button>
+                  </div>
+                </div>
+
+                {/* Trade Execution Toast Banner */}
+                {tradeToast && (
+                  <div style={{ marginTop: '12px', padding: '10px 14px', borderRadius: '6px', background: '#064e3b', border: '1px solid #10b981', color: '#a7f3d0', fontSize: '12px', fontWeight: 'bold' }}>
+                    ✅ {tradeToast}
+                  </div>
+                )}
+              </div>
+
 
               {/* Machine Learning Forward Direction Forecast Cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>

@@ -81,7 +81,12 @@ class SpotGoldAnalysisResponse(BaseModel):
     annual_volatility_pct: float
     parkinson_volatility_pct: float
     garman_klass_volatility_pct: float
+    rogers_satchell_volatility_pct: float
+    yang_zhang_volatility_pct: float
     hourly_volatility_pct: float
+    recommended_lot_size: float
+    trailing_stop_loss: float
+    take_profit_target: float
     active_strategy_id: str
     strategies: Dict[str, StrategyMetric] = Field(default_factory=dict)
     forecast_1h: HorizonPrediction
@@ -116,6 +121,47 @@ def compute_garman_klass_volatility(
     return float(math.sqrt(max(1e-9, variance * annualize_factor)))
 
 
+def compute_rogers_satchell_volatility(
+    open_arr: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, annualize_factor: float = 252.0
+) -> float:
+    """Rogers-Satchell extreme-value volatility estimator (drift-invariant)."""
+    n = len(close)
+    if n < 2:
+        return 0.16
+    ho = np.log(np.maximum(1e-9, high) / np.maximum(1e-9, open_arr))
+    hc = np.log(np.maximum(1e-9, high) / np.maximum(1e-9, close))
+    lo = np.log(np.maximum(1e-9, low) / np.maximum(1e-9, open_arr))
+    lc = np.log(np.maximum(1e-9, low) / np.maximum(1e-9, close))
+    rs_terms = ho * hc + lo * lc
+    variance = (1.0 / n) * np.sum(np.maximum(0.0, rs_terms))
+    return float(math.sqrt(max(1e-9, variance * annualize_factor)))
+
+
+def compute_yang_zhang_volatility(
+    open_arr: np.ndarray, high: np.ndarray, low: np.ndarray, close: np.ndarray, annualize_factor: float = 252.0
+) -> float:
+    """Yang-Zhang volatility estimator (drift-invariant and overnight jump-adjusted)."""
+    n = len(close)
+    if n < 3:
+        return 0.16
+    # Overnight gap variance: open vs previous close
+    log_oc = np.log(np.maximum(1e-9, open_arr[1:]) / np.maximum(1e-9, close[:-1]))
+    var_o = float(np.var(log_oc, ddof=1)) if len(log_oc) > 1 else 0.0
+
+    # Open-to-close variance
+    log_co = np.log(np.maximum(1e-9, close) / np.maximum(1e-9, open_arr))
+    var_c = float(np.var(log_co, ddof=1)) if len(log_co) > 1 else 0.0
+
+    # Rogers-Satchell variance (unannualized)
+    rs_vol = compute_rogers_satchell_volatility(open_arr, high, low, close, annualize_factor=1.0)
+    var_rs = rs_vol**2
+
+    k = 0.34 / (1.34 + (n + 1.0) / max(1.0, (n - 1.0)))
+    total_var = var_o + k * var_c + (1.0 - k) * var_rs
+    return float(math.sqrt(max(1e-9, total_var * annualize_factor)))
+
+
+
 class SpotGoldAnalyzer:
     """Comprehensive Spot Gold Quantitative Terminal Engine."""
 
@@ -132,12 +178,17 @@ class SpotGoldAnalyzer:
         custom_spot_price: float = 3984.66,
         n_bars: int = 60,
         seed: int = 42,
+        ema_fast: int = 12,
+        ema_slow: int = 26,
+        boll_window: int = 20,
+        boll_std: float = 2.0,
+        rsi_period: int = 14,
     ) -> SpotGoldAnalysisResponse:
         """
         Execute full Spot Gold analytics, strategy overlay computation, and probabilistic forecasting.
         """
         # Timeframe parameters
-        bars_map = {"1h": 60, "4h": 90, "1D": 120}
+        bars_map = {"15m": 48, "1h": 60, "4h": 90, "1D": 120}
         bars_count = bars_map.get(timeframe, n_bars)
 
         # Ingest multi-asset feeds for cross-market context
@@ -160,25 +211,27 @@ class SpotGoldAnalyzer:
         daily_chg_pct = float(((current_spot - close[-24 if len(close) > 24 else 0]) / close[-24 if len(close) > 24 else 0]) * 100.0)
         daily_chg_dollars = float(current_spot - close[-24 if len(close) > 24 else 0])
 
-        # Microstructure Volatilities
+        # Microstructure Volatilities (Parkinson, Garman-Klass, Rogers-Satchell, Yang-Zhang)
         trading_hours_per_year = 252.0 * 23.0
         parkinson_vol = compute_parkinson_volatility(high, low, annualize_factor=252.0)
         garman_klass_vol = compute_garman_klass_volatility(open_arr, high, low, close, annualize_factor=252.0)
-        annual_vol = 0.16  # Spot Gold historical baseline
+        rogers_satchell_vol = compute_rogers_satchell_volatility(open_arr, high, low, close, annualize_factor=252.0)
+        yang_zhang_vol = compute_yang_zhang_volatility(open_arr, high, low, close, annualize_factor=252.0)
+        annual_vol = rogers_satchell_vol if rogers_satchell_vol > 0.05 else 0.16  # Spot Gold baseline
         hourly_vol = annual_vol * math.sqrt(1.0 / trading_hours_per_year)
 
         # Macro Regime
         regime = self.regime_agent.detect_regime(close)
 
-        # Strategy 1: Dual EMA (12, 26)
-        fast_ema = self.alpha_agent._calc_ema(close, 12)
-        slow_ema = self.alpha_agent._calc_ema(close, 26)
-        sig_ema = self.alpha_agent.generate_ema_cross_signals(close, 12, 26)
-        bt_ema = self.backtest_agent.run_backtest("Dual EMA Trend Cross", "XAU/USD", close, sig_ema)
+        # Strategy 1: Dual EMA (ema_fast, ema_slow)
+        fast_ema = self.alpha_agent._calc_ema(close, ema_fast)
+        slow_ema = self.alpha_agent._calc_ema(close, ema_slow)
+        sig_ema = self.alpha_agent.generate_ema_cross_signals(close, ema_fast, ema_slow)
+        bt_ema = self.backtest_agent.run_backtest(f"Dual EMA ({ema_fast}/{ema_slow})", "XAU/USD", close, sig_ema)
         curr_ema_sig = "BUY" if sig_ema[-1] > 0 else ("SELL" if sig_ema[-1] < 0 else "HOLD")
 
-        # Strategy 2: Bollinger Bands (20, 2.0)
-        w = 20
+        # Strategy 2: Bollinger Bands (boll_window, boll_std)
+        w = boll_window
         boll_mid = np.empty_like(close)
         boll_upper = np.empty_like(close)
         boll_lower = np.empty_like(close)
@@ -188,16 +241,16 @@ class SpotGoldAnalyzer:
             m = float(np.mean(sub))
             s = float(np.std(sub))
             boll_mid[i] = m
-            boll_upper[i] = m + 2.0 * s
-            boll_lower[i] = m - 2.0 * s
+            boll_upper[i] = m + boll_std * s
+            boll_lower[i] = m - boll_std * s
 
-        sig_boll = self.alpha_agent.generate_bollinger_signals(close, window=20, num_std=2.0)
-        bt_boll = self.backtest_agent.run_backtest("Bollinger Mean-Reversion", "XAU/USD", close, sig_boll)
+        sig_boll = self.alpha_agent.generate_bollinger_signals(close, window=boll_window, num_std=boll_std)
+        bt_boll = self.backtest_agent.run_backtest(f"Bollinger ({boll_window}, {boll_std}σ)", "XAU/USD", close, sig_boll)
         curr_boll_sig = "BUY" if sig_boll[-1] > 0 else ("SELL" if sig_boll[-1] < 0 else "HOLD")
 
-        # Strategy 3: RSI Momentum (14)
-        sig_rsi = self.alpha_agent.generate_rsi_signals(close, period=14, overbought=70.0, oversold=30.0)
-        bt_rsi = self.backtest_agent.run_backtest("RSI Momentum Breakout", "XAU/USD", close, sig_rsi)
+        # Strategy 3: RSI Momentum (rsi_period)
+        sig_rsi = self.alpha_agent.generate_rsi_signals(close, period=rsi_period, overbought=70.0, oversold=30.0)
+        bt_rsi = self.backtest_agent.run_backtest(f"RSI Momentum ({rsi_period})", "XAU/USD", close, sig_rsi)
         curr_rsi_sig = "BUY" if sig_rsi[-1] > 0 else ("SELL" if sig_rsi[-1] < 0 else "HOLD")
 
         # Strategy 4: Ornstein-Uhlenbeck Mean-Reversion Equilibrium
@@ -212,7 +265,7 @@ class SpotGoldAnalyzer:
         strategy_registry: Dict[str, StrategyMetric] = {
             "ema": StrategyMetric(
                 strategy_id="ema",
-                strategy_name="Dual EMA Trend Cross (12/26)",
+                strategy_name=f"Dual EMA Trend Cross ({ema_fast}/{ema_slow})",
                 annualized_sharpe=round(bt_ema.annualized_sharpe, 2),
                 total_return_pct=round(bt_ema.total_return_pct, 2),
                 max_drawdown_pct=round(bt_ema.max_drawdown_pct, 2),
@@ -223,7 +276,7 @@ class SpotGoldAnalyzer:
             ),
             "bollinger": StrategyMetric(
                 strategy_id="bollinger",
-                strategy_name="Bollinger Bands (20, 2σ)",
+                strategy_name=f"Bollinger Bands ({boll_window}, {boll_std}σ)",
                 annualized_sharpe=round(bt_boll.annualized_sharpe, 2),
                 total_return_pct=round(bt_boll.total_return_pct, 2),
                 max_drawdown_pct=round(bt_boll.max_drawdown_pct, 2),
@@ -234,14 +287,14 @@ class SpotGoldAnalyzer:
             ),
             "rsi": StrategyMetric(
                 strategy_id="rsi",
-                strategy_name="RSI Momentum Breakout (14)",
+                strategy_name=f"RSI Momentum Breakout ({rsi_period})",
                 annualized_sharpe=round(bt_rsi.annualized_sharpe, 2),
                 total_return_pct=round(bt_rsi.total_return_pct, 2),
                 max_drawdown_pct=round(bt_rsi.max_drawdown_pct, 2),
                 win_rate_pct=round(bt_rsi.win_rate_pct, 1),
                 total_trades=bt_rsi.total_trades,
                 current_signal=curr_rsi_sig,
-                thesis=f"14-period RSI is balanced. Extreme oversold (<30) or overbought (>70) triggers breakout entries.",
+                thesis=f"{rsi_period}-period RSI is balanced. Extreme oversold (<30) or overbought (>70) triggers breakout entries.",
             ),
             "ou": StrategyMetric(
                 strategy_id="ou",
@@ -255,6 +308,26 @@ class SpotGoldAnalyzer:
                 thesis=f"Spot price is pulled toward stationary equilibrium benchmark ${mu_ou:,.2f} with half-life of {half_life:.1f} days.",
             ),
         }
+
+        # Dynamic Fractional Kelly Position Sizing and Dynamic Risk Bands
+        active_metric = strategy_registry.get(active_strategy, strategy_registry["ema"])
+        p_win = max(0.40, min(0.85, active_metric.win_rate_pct / 100.0))
+        b_payoff = 1.5
+        kelly_fraction = max(0.02, min(0.20, (p_win * (b_payoff + 1.0) - 1.0) / b_payoff))
+        half_kelly = 0.5 * kelly_fraction
+        rec_lot_size = round(max(0.1, min(10.0, (100000.0 * half_kelly) / (current_spot * 0.05))), 2)
+
+        risk_delta = current_spot * (max(0.08, parkinson_vol) / math.sqrt(252.0 * 23.0)) * 2.5
+        if active_metric.current_signal == "BUY":
+            trailing_stop = round(current_spot - risk_delta, 2)
+            take_profit = round(current_spot + 2.0 * risk_delta, 2)
+        elif active_metric.current_signal == "SELL":
+            trailing_stop = round(current_spot + risk_delta, 2)
+            take_profit = round(current_spot - 2.0 * risk_delta, 2)
+        else:
+            trailing_stop = round(current_spot - risk_delta, 2)
+            take_profit = round(current_spot + risk_delta, 2)
+
 
         # Build Candles with Overlays
         candle_objs: List[GoldCandle] = []
@@ -368,7 +441,12 @@ class SpotGoldAnalyzer:
             annual_volatility_pct=round(annual_vol * 100.0, 2),
             parkinson_volatility_pct=round(parkinson_vol * 100.0, 2),
             garman_klass_volatility_pct=round(garman_klass_vol * 100.0, 2),
+            rogers_satchell_volatility_pct=round(rogers_satchell_vol * 100.0, 2),
+            yang_zhang_volatility_pct=round(yang_zhang_vol * 100.0, 2),
             hourly_volatility_pct=round(hourly_vol * 100.0, 4),
+            recommended_lot_size=rec_lot_size,
+            trailing_stop_loss=trailing_stop,
+            take_profit_target=take_profit,
             active_strategy_id=active_strategy,
             strategies=strategy_registry,
             forecast_1h=fc_1h,
