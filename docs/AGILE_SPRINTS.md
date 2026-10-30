@@ -89,3 +89,20 @@ This project follows strict Agile Scrum mechanics with 2-week Sprint increments.
 1. **Live CCXT Exchange Connector**: Add asynchronous streaming adapters for live Binance / Bybit and OANDA / Interactive Brokers feeds.
 2. **Markowitz Efficient Frontier & Black-Litterman Allocation**: Implement quadratic programming optimizer for multi-asset risk-adjusted weight rebalancing based on alpha hypothesis confidence scores.
 3. **Execution Market Impact**: Model square-root law market impact for large institutional orders in low-liquidity regimes.
+
+---
+
+### Sprint 9: Autonomous Spot Gold Quantitative Terminal, Drift-Invariant Volatility & Real-Time ML Engine
+- **Sprint Goal**: Institutionalize the dedicated Spot Gold (`XAU/USD`) terminal into the production quant pipeline: integrate drift-invariant volatility estimators (Rogers-Satchell, Yang-Zhang), continuous online auto-learning for forward price trajectories, dynamic position-sizing execution for spot gold contracts, and interactive TradingView-grade overlay synchronization.
+- **US-9.1 (3 SP)**: Drift-Invariant & Jump-Adjusted Volatility Suite (`analytics/gold_analyzer.py`). Implement Rogers-Satchell ($\sigma_{RS}^2$) and Yang-Zhang ($\sigma_{YZ}^2$) estimators to eliminate trend bias during directional gold rallies and handle overnight opening gaps.
+- **US-9.2 (3 SP)**: Live Spot Gold Streaming Feed Adapter (`core/data_feed.py`, `api/main.py`). Establish async poll/stream client connecting to real-time OANDA / TradingView benchmark feeds with automatic fallback to synthetic jump-diffusion.
+- **US-9.3 (3 SP)**: Online Machine Learning Auto-Learner for Spot Gold Direction (`analytics/auto_learner.py`). Integrate Recursive Least Squares (RLS) and Online Gradient Descent (OGD) to update feature weights in real time upon bar completion, predicting $+1\text{h}$ and $+24\text{h}$ expected price delta.
+- **US-9.4 (2 SP)**: Spot Gold Automated Trade Execution & Dynamic Sizing (`execution/engine.py`, `risk/governor.py`). Calculate position sizing using the Fractional Kelly Criterion modulated by Parkinson/ATR tail bands; enforce dynamic trailing stop-loss on XAU contracts.
+- **US-9.5 (2 SP)**: Interactive TradingView-Grade UI Enhancements (`frontend/src/App.jsx`). Multi-timeframe bar synchronization (`1h`, `4h`, `1D`), real-time strategy overlay parameter adjustment sliders (EMA spans, Bollinger standard deviations, RSI periods), and single-click CSV backtest export.
+- **Velocity Target**: 13 Story Points.
+- **Definition of Done (DoD)**:
+  - Unit & integration tests for all 5 stories passing with 0 errors.
+  - Test coverage $\ge 90\%$ on new modules.
+  - Deterministic Vite frontend compilation (`npm run build`) with zero warnings.
+  - Exit Code 0 on all static analyzers.
+
