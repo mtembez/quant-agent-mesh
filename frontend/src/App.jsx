@@ -9,10 +9,16 @@ export default function App() {
   });
 
   const [strategies, setStrategies] = useState([]);
-  const [activeTab, setActiveTab] = useState('leaderboard'); // leaderboard | lab | risk | execution | metrics
+  const [activeTab, setActiveTab] = useState('predict'); // predict | leaderboard | lab | pairs | execution | metrics
   const [regime, setRegime] = useState('MEAN_REVERTING');
   const [metricsText, setMetricsText] = useState('');
-  const [statusMessage, setStatusMessage] = useState('Ready for Autonomous Alpha Swarm Cycles');
+  const [statusMessage, setStatusMessage] = useState('Live Auto-Learning Statistical Arbitrage Active');
+
+  // Live Auto-Learning Predictor State
+  const [livePrediction, setLivePrediction] = useState(null);
+  const [livePairKey, setLivePairKey] = useState('BTC/USD__ETH/USD');
+  const [autoRefresh, setAutoRefresh] = useState(true);
+  const [loadingPrediction, setLoadingPrediction] = useState(false);
 
   // Backtest Lab inputs
   const [labStrategy, setLabStrategy] = useState('bollinger');
@@ -33,11 +39,17 @@ export default function App() {
   useEffect(() => {
     fetchPortfolio();
     fetchStrategies();
+    fetchLivePrediction(livePairKey);
+
     const interval = setInterval(() => {
       fetchPortfolio();
-    }, 4000);
+      if (autoRefresh) {
+        fetchLivePrediction(livePairKey);
+      }
+    }, 3500);
+
     return () => clearInterval(interval);
-  }, []);
+  }, [autoRefresh, livePairKey]);
 
   const fetchPortfolio = async () => {
     try {
@@ -57,6 +69,23 @@ export default function App() {
         setStrategies(data);
       }
     } catch (e) {}
+  };
+
+  const fetchLivePrediction = async (pairKey = livePairKey) => {
+    setLoadingPrediction(true);
+    const [symA, symB] = pairKey.split('__');
+    try {
+      const res = await fetch(`/api/v1/predict/live?symbol_a=${encodeURIComponent(symA)}&symbol_b=${encodeURIComponent(symB)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setLivePrediction(data);
+        setStatusMessage(`Prediction calibrated (${data.data_source}) -> Signal: ${data.action_signal} | Accuracy: ${data.online_accuracy_pct}%`);
+      }
+    } catch (e) {
+      console.error('Failed to fetch prediction:', e);
+    } finally {
+      setLoadingPrediction(false);
+    }
   };
 
   const runFullResearch = async () => {
@@ -118,7 +147,7 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setPairsResult(data);
-        setStatusMessage(`Pairs Analysis Complete -> Kalman Beta: ${data.pairs_analysis.hedge_ratio_beta} | O-U Half-Life: ${data.pairs_analysis.ou_half_life_days} days`);
+        setStatusMessage(`Pairs Analysis complete: β=${data.pairs_analysis.hedge_ratio_beta} | Half-life=${data.pairs_analysis.ou_half_life_days}d`);
       }
     } catch (e) {
       setStatusMessage('Pairs analysis request failed');
@@ -126,7 +155,7 @@ export default function App() {
   };
 
   const submitPaperOrder = async () => {
-    setStatusMessage(`Submitting Paper Order: ${orderSide} ${orderQty} ${orderSymbol}...`);
+    setStatusMessage(`Submitting paper order for ${orderQty} ${orderSymbol}...`);
     try {
       const res = await fetch('/api/v1/orders', {
         method: 'POST',
@@ -135,12 +164,12 @@ export default function App() {
           symbol: orderSymbol,
           side: orderSide,
           quantity: parseFloat(orderQty),
-          market_price: 65000.0,
+          market_price: 100.0,
         }),
       });
       if (res.ok) {
         const data = await res.json();
-        setStatusMessage(`Order ${data.order_id} filled @ $${data.filled_price} (Status: ${data.status})`);
+        setStatusMessage(`Order executed: ${data.side} ${data.quantity} ${data.symbol} @ $${data.filled_price} (Status: ${data.status})`);
         fetchPortfolio();
       }
     } catch (e) {
@@ -158,16 +187,113 @@ export default function App() {
     } catch (e) {}
   };
 
+  // Helper to render SVG Prediction Chart
+  const renderPredictionChart = () => {
+    if (!livePrediction || !livePrediction.historical_spreads || livePrediction.historical_spreads.length === 0) {
+      return <p style={{ color: '#94a3b8' }}>Loading real-time predictive trajectory...</p>;
+    }
+
+    const hist = livePrediction.historical_spreads;
+    const traj = livePrediction.trajectory;
+
+    const allValues = [
+      ...hist,
+      ...traj.map((t) => t.expected_spread),
+      ...traj.map((t) => t.low_95),
+      ...traj.map((t) => t.high_95),
+      livePrediction.ou_mu,
+    ];
+
+    const minY = Math.min(...allValues);
+    const maxY = Math.max(...allValues);
+    const rangeY = Math.max(1e-5, maxY - minY);
+
+    const width = 760;
+    const height = 240;
+    const padX = 40;
+    const padY = 30;
+
+    const totalSteps = hist.length + traj.length - 1;
+
+    const getX = (idx) => padX + (idx / totalSteps) * (width - 2 * padX);
+    const getY = (val) => height - padY - ((val - minY) / rangeY) * (height - 2 * padY);
+
+    // Build historical spread line
+    const histPoints = hist.map((val, i) => `${getX(i)},${getY(val)}`).join(' L ');
+    const histPath = `M ${histPoints}`;
+
+    // Build trajectory path starting from last historical point
+    const startIdx = hist.length - 1;
+    const trajCoords = [
+      { x: getX(startIdx), y: getY(hist[startIdx]), lowY: getY(hist[startIdx]), highY: getY(hist[startIdx]) },
+      ...traj.map((t, i) => ({
+        x: getX(startIdx + 1 + i),
+        y: getY(t.expected_spread),
+        lowY: getY(t.low_95),
+        highY: getY(t.high_95),
+      })),
+    ];
+
+    const trajPath = 'M ' + trajCoords.map((c) => `${c.x},${c.y}`).join(' L ');
+
+    // Build 95% confidence cone polygon
+    const coneTop = trajCoords.map((c) => `${c.x},${c.highY}`).join(' L ');
+    const coneBottom = trajCoords
+      .slice()
+      .reverse()
+      .map((c) => `${c.x},${c.lowY}`)
+      .join(' L ');
+    const conePolygon = `M ${coneTop} L ${coneBottom} Z`;
+
+    const muY = getY(livePrediction.ou_mu);
+
+    return (
+      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: '#0a0f1d', borderRadius: '8px', border: '1px solid #1e293b' }}>
+        {/* Grid and Mean Line */}
+        <line x1={padX} y1={muY} x2={width - padX} y2={muY} stroke="#eab308" strokeDasharray="4 4" strokeWidth="1.5" />
+        <text x={width - padX + 5} y={muY + 4} fill="#eab308" fontSize="11" fontFamily="monospace">μ (Equilibrium)</text>
+
+        {/* 95% Confidence Cone */}
+        <path d={conePolygon} fill="rgba(168, 85, 247, 0.15)" stroke="none" />
+
+        {/* Historical Spread Line */}
+        <path d={histPath} fill="none" stroke="#38bdf8" strokeWidth="2.5" />
+
+        {/* Forecast Trajectory Line */}
+        <path d={trajPath} fill="none" stroke="#ec4899" strokeWidth="2.5" strokeDasharray="5 3" />
+
+        {/* Forecast Dots */}
+        {trajCoords.slice(1).map((c, i) => (
+          <g key={i}>
+            <circle cx={c.x} cy={c.y} r="4.5" fill="#ec4899" />
+            <text x={c.x - 10} y={height - 10} fill="#94a3b8" fontSize="10" fontFamily="monospace">
+              +{traj[i].horizon_hours}h
+            </text>
+          </g>
+        ))}
+
+        {/* Transition Divider (NOW) */}
+        <line x1={getX(startIdx)} y1={padY} x2={getX(startIdx)} y2={height - padY} stroke="#f97316" strokeDasharray="2 2" strokeWidth="1.5" />
+        <circle cx={getX(startIdx)} cy={getY(hist[startIdx])} r="6" fill="#f97316" stroke="#fff" strokeWidth="1.5" />
+        <text x={getX(startIdx) - 15} y={padY - 8} fill="#f97316" fontSize="11" fontWeight="bold">NOW</text>
+
+        {/* Axis Labels */}
+        <text x={padX} y={20} fill="#38bdf8" fontSize="12" fontWeight="bold">Historical Spread (Past 30 Bars)</text>
+        <text x={getX(startIdx) + 20} y={20} fill="#ec4899" fontSize="12" fontWeight="bold">► Forecast Trajectory (Ornstein-Uhlenbeck + 95% Cone)</text>
+      </svg>
+    );
+  };
+
   return (
-    <div style={{ minHeight: '100vh', background: '#030712', color: '#f8fafc', padding: '24px' }}>
+    <div style={{ minHeight: '100vh', background: '#030712', color: '#f8fafc', padding: '24px', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
       {/* Top Header */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1e293b', paddingBottom: '16px' }}>
         <div>
           <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
-            QUANT SENTINEL <span style={{ fontSize: '13px', background: '#065f46', color: '#d1fae5', padding: '3px 8px', borderRadius: '4px', marginLeft: '8px' }}>v1.0.0</span>
+            QUANT SENTINEL <span style={{ fontSize: '13px', background: '#065f46', color: '#d1fae5', padding: '3px 8px', borderRadius: '4px', marginLeft: '8px' }}>v1.2.0 LIVE</span>
           </h1>
           <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#94a3b8' }}>
-            Autonomous Quantitative Alpha Swarm: Vectorized Backtesting, Monte Carlo Risk Governance & Paper Execution
+            Autonomous Alpha Swarm: Real-Time Auto-Learning Pairs Predictor, Vectorized Backtesting & Cholesky Risk Mesh
           </p>
         </div>
         <div style={{ display: 'flex', gap: '14px', fontSize: '13px' }}>
@@ -178,10 +304,7 @@ export default function App() {
             Cash: <strong style={{ color: '#38bdf8' }}>${portfolio.cash.toLocaleString()}</strong>
           </div>
           <div style={{ background: '#111827', padding: '8px 12px', borderRadius: '6px' }}>
-            Total PnL: <strong style={{ color: portfolio.total_pnl >= 0 ? '#10b981' : '#ef4444' }}>${portfolio.total_pnl.toLocaleString()}</strong>
-          </div>
-          <div style={{ background: '#111827', padding: '8px 12px', borderRadius: '6px' }}>
-            Market Regime: <strong style={{ color: '#f59e0b' }}>{regime}</strong>
+            Regime: <strong style={{ color: '#f59e0b' }}>{regime}</strong>
           </div>
         </div>
       </header>
@@ -200,6 +323,7 @@ export default function App() {
       {/* Navigation Tabs */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
         {[
+          { id: 'predict', label: '🔮 Live Auto-Learning Predictor' },
           { id: 'leaderboard', label: '🏆 Alpha Hypothesis Leaderboard' },
           { id: 'lab', label: '🔬 Vectorized Backtest Lab' },
           { id: 'pairs', label: '⚖️ Statistical Arbitrage (Pairs)' },
@@ -227,6 +351,188 @@ export default function App() {
           </button>
         ))}
       </div>
+
+      {/* ========================================================================= */}
+      {/* TAB 0: LIVE AUTO-LEARNING PREDICTOR                                      */}
+      {/* ========================================================================= */}
+      {activeTab === 'predict' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Controls Bar */}
+          <div style={{ background: '#111827', padding: '16px 20px', borderRadius: '8px', border: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
+              <label style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold' }}>Target Trading Pair:</label>
+              <select
+                value={livePairKey}
+                onChange={(e) => {
+                  setLivePairKey(e.target.value);
+                  fetchLivePrediction(e.target.value);
+                }}
+                style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '8px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold' }}
+              >
+                <option value="BTC/USD__ETH/USD">BTC/USD vs ETH/USD (Live Public Exchange)</option>
+                <option value="XAU/USD__JPY/USD">XAU/USD vs JPY/USD (Physical Gold in Yen)</option>
+                <option value="BTC/USD__XAU/USD">BTC/USD vs XAU/USD (Digital vs Physical Gold)</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                Source: <strong style={{ color: '#38bdf8' }}>{livePrediction?.data_source || 'Exchange Stream'}</strong>
+              </span>
+              <button
+                onClick={() => setAutoRefresh(!autoRefresh)}
+                style={{
+                  background: autoRefresh ? '#065f46' : '#374151',
+                  color: autoRefresh ? '#a7f3d0' : '#d1d5db',
+                  border: '1px solid ' + (autoRefresh ? '#10b981' : '#4b5563'),
+                  padding: '6px 12px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '12px',
+                  fontWeight: 'bold',
+                }}
+              >
+                {autoRefresh ? '● Auto-Learning (Active 3s)' : '○ Auto-Refresh Paused'}
+              </button>
+              <button
+                onClick={() => fetchLivePrediction(livePairKey)}
+                disabled={loadingPrediction}
+                style={{ background: '#059669', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+              >
+                {loadingPrediction ? 'Learning...' : '⚡ Predict Now'}
+              </button>
+            </div>
+          </div>
+
+          {livePrediction && (
+            <>
+              {/* Telemetry KPI Cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Live Quotes ({livePrediction.symbol_a} / {livePrediction.symbol_b})</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '6px', color: '#38bdf8' }}>
+                    ${livePrediction.spot_a.toLocaleString()} / ${livePrediction.spot_b.toLocaleString()}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+                    Ratio: <strong>{livePrediction.price_ratio}</strong>
+                  </div>
+                </div>
+
+                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Adaptive Kalman Elasticity (β)</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '6px', color: '#a855f7' }}>
+                    {livePrediction.hedge_ratio_beta > 0 ? '+' : ''}{livePrediction.hedge_ratio_beta}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+                    Robbins-Monro Rate η: <strong>{livePrediction.learning_rate}</strong>
+                  </div>
+                </div>
+
+                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Online Prediction Accuracy</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '6px', color: '#10b981' }}>
+                    {livePrediction.online_accuracy_pct}%
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+                    Evals: <strong>{livePrediction.total_evaluations} calls scored</strong>
+                  </div>
+                </div>
+
+                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Spread Z-Score & Half-Life</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '6px', color: Math.abs(livePrediction.current_z_score) > 1.5 ? '#f59e0b' : '#38bdf8' }}>
+                    {livePrediction.current_z_score > 0 ? '+' : ''}{livePrediction.current_z_score} σ
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+                    Half-Life t₁/₂: <strong>{livePrediction.half_life_hours} hours</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Predictive Action Signal Banner */}
+              <div
+                style={{
+                  padding: '16px 20px',
+                  borderRadius: '8px',
+                  background:
+                    livePrediction.action_signal.includes('BUY')
+                      ? 'linear-gradient(90deg, #064e3b 0%, #022c22 100%)'
+                      : livePrediction.action_signal.includes('SELL')
+                      ? 'linear-gradient(90deg, #7f1d1d 0%, #450a0a 100%)'
+                      : 'linear-gradient(90deg, #1e293b 0%, #0f172a 100%)',
+                  border:
+                    '1px solid ' +
+                    (livePrediction.action_signal.includes('BUY')
+                      ? '#10b981'
+                      : livePrediction.action_signal.includes('SELL')
+                      ? '#ef4444'
+                      : '#3b82f6'),
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
+              >
+                <div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Live Auto-Learning Predictive Recommendation
+                  </div>
+                  <div style={{ fontSize: '22px', fontWeight: '900', color: '#f8fafc', marginTop: '2px' }}>
+                    {livePrediction.action_signal}
+                  </div>
+                  <div style={{ fontSize: '13px', color: '#cbd5e1', marginTop: '4px' }}>{livePrediction.action_thesis}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Stationary Target (μ)</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', fontFamily: 'monospace', color: '#eab308' }}>
+                    {livePrediction.ou_mu > 0 ? '+' : ''}{livePrediction.ou_mu}
+                  </div>
+                </div>
+              </div>
+
+              {/* SVG Forecast Chart */}
+              <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                <h2 style={{ fontSize: '16px', color: '#10b981', marginTop: 0, marginBottom: '14px' }}>
+                  📈 Real-Time Spread & Forward Projection Trajectory (Ornstein-Uhlenbeck SDE)
+                </h2>
+                {renderPredictionChart()}
+              </div>
+
+              {/* Trajectory Forecast Schedule Table */}
+              <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                <h2 style={{ fontSize: '16px', color: '#10b981', marginTop: 0 }}>
+                  📋 Future Spread Targets & Expected Relative Reversion Schedule
+                </h2>
+                <div style={{ overflowX: 'auto', marginTop: '12px' }}>
+                  <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #374151', color: '#94a3b8' }}>
+                        <th style={{ padding: '10px' }}>Forecast Horizon</th>
+                        <th style={{ padding: '10px' }}>Projected Spread Value</th>
+                        <th style={{ padding: '10px' }}>95% Confidence Interval [Low / High]</th>
+                        <th style={{ padding: '10px' }}>Expected Mean-Reversion Shift</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {livePrediction.trajectory.map((t, idx) => (
+                        <tr key={idx} style={{ borderBottom: '1px solid #1f2937' }}>
+                          <td style={{ padding: '10px', fontWeight: 'bold', color: '#ec4899' }}>+{t.horizon_hours} Hours Forward</td>
+                          <td style={{ padding: '10px', fontFamily: 'monospace', fontWeight: 'bold' }}>{t.expected_spread > 0 ? '+' : ''}{t.expected_spread}</td>
+                          <td style={{ padding: '10px', color: '#a855f7', fontFamily: 'monospace' }}>
+                            [{t.low_95 > 0 ? '+' : ''}{t.low_95} , {t.high_95 > 0 ? '+' : ''}{t.high_95}]
+                          </td>
+                          <td style={{ padding: '10px', color: t.expected_reversion_pct >= 0 ? '#10b981' : '#ef4444', fontWeight: 'bold' }}>
+                            {t.expected_reversion_pct > 0 ? '+' : ''}{t.expected_reversion_pct}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Tab 1: Leaderboard */}
       {activeTab === 'leaderboard' && (
@@ -351,17 +657,17 @@ export default function App() {
                 </div>
               </div>
             ) : (
-              <p style={{ color: '#94a3b8', fontSize: '13px' }}>Configure parameters and click "Run Zero-Loop Matrix Backtest" to view analytics.</p>
+              <p style={{ color: '#94a3b8', fontSize: '13px' }}>Configure strategy parameters and click "Run Zero-Loop Matrix Backtest".</p>
             )}
           </div>
         </div>
       )}
 
-      {/* Tab: Statistical Arbitrage & Pairs Trading */}
+      {/* Tab 3: Pairs Trading */}
       {activeTab === 'pairs' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
           <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>⚖️ Cointegrated Asset Pair</h2>
+            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>⚖️ Pairs Cointegration Lab</h2>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
               <div>
                 <label style={{ fontSize: '12px', color: '#94a3b8' }}>Asset A:</label>
@@ -391,34 +697,18 @@ export default function App() {
           </div>
 
           <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📊 Mean-Reversion Parameters & Backtest</h2>
+            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📊 Statistical Arbitrage Results</h2>
             {pairsResult ? (
-              <div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginTop: '14px' }}>
-                  <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>Kalman Hedge Beta (β)</div>
-                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#38bdf8' }}>{pairsResult.pairs_analysis.hedge_ratio_beta}</div>
-                  </div>
-                  <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>O-U Half-Life</div>
-                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#10b981' }}>{pairsResult.pairs_analysis.ou_half_life_days} days</div>
-                  </div>
-                  <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>Current Z-Score</div>
-                    <div style={{ fontSize: '18px', fontWeight: 'bold', color: Math.abs(pairsResult.pairs_analysis.current_z_score) > 2.0 ? '#ef4444' : '#10b981' }}>
-                      {pairsResult.pairs_analysis.current_z_score}σ
-                    </div>
-                  </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px', marginTop: '16px' }}>
+                <div style={{ background: '#1f2937', padding: '14px', borderRadius: '6px' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Dynamic Kalman Hedge Ratio (β)</div>
+                  <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#38bdf8' }}>{pairsResult.pairs_analysis.hedge_ratio_beta}</div>
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>O-U Speed (θ): {pairsResult.pairs_analysis.ou_theta}</div>
                 </div>
-
-                <div style={{ marginTop: '16px', background: '#1f2937', padding: '14px', borderRadius: '6px' }}>
-                  <h3 style={{ margin: '0 0 10px 0', fontSize: '14px', color: '#38bdf8' }}>Spread Backtest Performance</h3>
-                  <div style={{ display: 'flex', gap: '20px', fontSize: '13px' }}>
-                    <div>Total Return: <strong style={{ color: '#10b981' }}>{pairsResult.backtest.total_return_pct}%</strong></div>
-                    <div>Annualized Sharpe: <strong style={{ color: '#38bdf8' }}>{pairsResult.backtest.annualized_sharpe}</strong></div>
-                    <div>Max Drawdown: <strong style={{ color: '#ef4444' }}>{pairsResult.backtest.max_drawdown_pct}%</strong></div>
-                    <div>Trades: <strong>{pairsResult.backtest.total_trades}</strong></div>
-                  </div>
+                <div style={{ background: '#1f2937', padding: '14px', borderRadius: '6px' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Spread Z-Score & Half-Life</div>
+                  <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#10b981' }}>{pairsResult.pairs_analysis.current_z_score} σ</div>
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>Half-Life: {pairsResult.pairs_analysis.ou_half_life_days} days</div>
                 </div>
               </div>
             ) : (
@@ -428,7 +718,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Tab 3: Execution Hub */}
+      {/* Tab 4: Execution Hub */}
       {activeTab === 'execution' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
           <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
@@ -514,7 +804,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Tab 4: Metrics */}
+      {/* Tab 5: Metrics */}
       {activeTab === 'metrics' && (
         <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
           <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📊 Prometheus Exposition Telemetry (/metrics)</h2>

@@ -10,12 +10,18 @@ from starlette.responses import JSONResponse, PlainTextResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from core.data_feed import extract_ohlcv_arrays, generate_synthetic_gbm
+from core.data_feed import extract_ohlcv_arrays, generate_synthetic_gbm, generate_multi_asset_feed, extract_multi_asset_price_matrix
 from core.models import OrderSide, OrderType
 from core.swarm import QuantSwarmCoordinator
+from core.live_feed import get_live_pair_prices
+from analytics.auto_learner import OnlineAdaptivePairsPredictor
+import os
+from starlette.staticfiles import StaticFiles
+from starlette.routing import Mount
 
 coordinator = QuantSwarmCoordinator()
 connected_websockets: List[WebSocket] = []
+adaptive_predictor = OnlineAdaptivePairsPredictor()
 
 
 async def health_live(request: Request):
@@ -167,6 +173,53 @@ async def websocket_market_feed(websocket: WebSocket):
             connected_websockets.remove(websocket)
 
 
+async def live_predict_endpoint(request: Request):
+    """Real-time online adaptive learning pairs prediction endpoint."""
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    else:
+        body = dict(request.query_params)
+
+    symbol_a = body.get("symbol_a", "BTC/USD")
+    symbol_b = body.get("symbol_b", "ETH/USD")
+    n_bars = int(body.get("n_bars", 200))
+    interval = int(body.get("interval_minutes", 60))
+    force_synthetic = str(body.get("synthetic", "false")).lower() in ["true", "1"]
+
+    p_a = None
+    p_b = None
+    data_source = "Kraken Public Exchange (LIVE STREAM)"
+
+    if not force_synthetic and ("BTC" in symbol_a or "ETH" in symbol_a) and ("BTC" in symbol_b or "ETH" in symbol_b):
+        try:
+            p_a, p_b, spot_a, spot_b = get_live_pair_prices(symbol_a, symbol_b, interval_minutes=interval, n_bars=n_bars)
+        except Exception:
+            p_a = None
+
+    if p_a is None:
+        data_source = "Calibrated Multi-Asset Ingestion Engine"
+        feed = generate_multi_asset_feed(symbols=[symbol_a, symbol_b], n_bars=n_bars, seed=42)
+        sym_order, ts, matrix = extract_multi_asset_price_matrix(feed)
+        idx_a = sym_order.index(symbol_a)
+        idx_b = sym_order.index(symbol_b)
+        p_a = matrix[:, idx_a]
+        p_b = matrix[:, idx_b]
+
+    pred_res = adaptive_predictor.predict_pair(
+        symbol_a=symbol_a,
+        symbol_b=symbol_b,
+        prices_a=p_a,
+        prices_b=p_b,
+        data_source=data_source,
+    )
+    return JSONResponse(pred_res.model_dump(mode="json"))
+
+
+dist_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
+
 routes = [
     Route("/health/live", health_live, methods=["GET"]),
     Route("/health/ready", health_ready, methods=["GET"]),
@@ -175,10 +228,14 @@ routes = [
     Route("/api/v1/research", trigger_research_cycle, methods=["POST"]),
     Route("/api/v1/backtest", execute_backtest_endpoint, methods=["POST"]),
     Route("/api/v1/pairs/analyze", analyze_pairs_endpoint, methods=["POST"]),
+    Route("/api/v1/predict/live", live_predict_endpoint, methods=["GET", "POST"]),
     Route("/api/v1/orders", submit_order_endpoint, methods=["POST"]),
     Route("/api/v1/portfolio", get_portfolio_endpoint, methods=["GET"]),
     WebSocketRoute("/ws/market-feed", websocket_market_feed),
 ]
+
+if os.path.isdir(dist_dir):
+    routes.append(Mount("/", app=StaticFiles(directory=dist_dir, html=True), name="static"))
 
 middleware = [
     Middleware(
