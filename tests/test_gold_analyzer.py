@@ -75,6 +75,15 @@ def test_spot_gold_analyzer_strategy_overlays():
         # Check forward trajectory
         assert len(res.forward_trajectory) == 8
 
+        # Check Machine Learning Engine Telemetry
+        assert res.ml_model_name == "Online Adaptive RLS + Bayesian Probability Engine"
+        assert 0.0 <= res.ml_prediction_prob_up <= 100.0
+        assert 0.0 <= res.ml_prediction_prob_down <= 100.0
+        assert abs((res.ml_prediction_prob_up + res.ml_prediction_prob_down) - 100.0) < 0.2
+        assert res.ml_consensus_signal in ["BUY", "SELL", "HOLD"]
+        assert 0.0 <= res.ml_confidence_score <= 100.0
+        assert len(res.ml_driving_features) > 0
+
 
 def test_api_gold_analyze_endpoint():
     """Verify Starlette ASGI /api/v1/gold/analyze and /api/v1/gold/trade endpoints."""
@@ -92,6 +101,10 @@ def test_api_gold_analyze_endpoint():
     assert "recommended_lot_size" in d
     assert "forecast_1h" in d
     assert "candles" in d
+    assert "ml_model_name" in d
+    assert "ml_prediction_prob_up" in d
+    assert "ml_consensus_signal" in d
+    assert "ml_driving_features" in d
 
     # Test POST with custom strategy and parameters
     res_post = client.post(

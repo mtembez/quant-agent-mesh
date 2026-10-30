@@ -437,6 +437,7 @@ export default function App() {
               {hoveredCandle.ema_slow && <span style={{ color: '#a855f7' }}>EMA({goldEmaSlow}): ${hoveredCandle.ema_slow.toFixed(2)}</span>}
               {hoveredCandle.boll_upper && <span style={{ color: '#ef4444' }}>Upper: ${hoveredCandle.boll_upper.toFixed(2)}</span>}
               {hoveredCandle.boll_lower && <span style={{ color: '#10b981' }}>Lower: ${hoveredCandle.boll_lower.toFixed(2)}</span>}
+              {hoveredCandle.rsi !== undefined && <span style={{ color: '#f59e0b' }}>RSI({goldRsiPeriod}): {hoveredCandle.rsi.toFixed(1)}</span>}
             </div>
           ) : (
             <div style={{ color: '#64748b', display: 'flex', gap: '12px' }}>
@@ -633,10 +634,58 @@ export default function App() {
             </g>
           )}
 
+          {goldStrategy === 'rsi' && (
+            <g>
+              <text x={padX + 260} y={20} fill="#f59e0b" fontSize="11" fontWeight="bold">● Cardwell RSI ({goldRsiPeriod}) Momentum Sub-Panel Active</text>
+            </g>
+          )}
+
+          {goldStrategy === 'ou' && (
+            <g>
+              <text x={padX + 260} y={20} fill="#eab308" fontSize="11" fontWeight="bold">● Ornstein-Uhlenbeck Equilibrium μ</text>
+            </g>
+          )}
+
           <text x={nowCoord.x + 18} y={20} fill="#ec4899" fontSize="12" fontWeight="bold">
             ► ML Forward Horizon Forecast & 95% Confidence Cone
           </text>
         </svg>
+
+        {/* RSI Momentum Oscillator Dedicated Sub-Panel */}
+        {goldStrategy === 'rsi' && (
+          <div style={{ marginTop: '12px', background: '#0a0f1d', borderRadius: '6px', padding: '10px 14px', border: '1px solid #1e293b' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '11px' }}>
+              <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>
+                🎯 RSI({goldRsiPeriod}) Relative Strength Momentum Oscillator & Cardwell Zones
+              </span>
+              <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
+                <span style={{ color: '#ef4444' }}>Overbought (70)</span>
+                <span style={{ color: '#64748b' }}>Midline (50)</span>
+                <span style={{ color: '#10b981' }}>Oversold (30)</span>
+                <span style={{ color: '#f59e0b', fontWeight: 'bold', fontFamily: 'monospace' }}>
+                  Current: {candles[candles.length - 1].rsi !== undefined ? candles[candles.length - 1].rsi.toFixed(1) : '50.0'}
+                </span>
+              </div>
+            </div>
+            <svg viewBox={`0 0 ${width} 70`} style={{ width: '100%', height: '70px', display: 'block' }}>
+              {/* Overbought line 70 */}
+              <line x1={padX} y1={70 - (70 / 100) * 60 - 5} x2={width - padX} y2={70 - (70 / 100) * 60 - 5} stroke="#ef4444" strokeDasharray="3 3" strokeWidth="1" />
+              {/* Midline 50 */}
+              <line x1={padX} y1={70 - (50 / 100) * 60 - 5} x2={width - padX} y2={70 - (50 / 100) * 60 - 5} stroke="#475569" strokeDasharray="2 2" strokeWidth="1" />
+              {/* Oversold line 30 */}
+              <line x1={padX} y1={70 - (30 / 100) * 60 - 5} x2={width - padX} y2={70 - (30 / 100) * 60 - 5} stroke="#10b981" strokeDasharray="3 3" strokeWidth="1" />
+              {/* Bullish zone (50 - 78) shaded band */}
+              <rect x={padX} y={70 - (78 / 100) * 60 - 5} width={width - 2 * padX} height={((78 - 50) / 100) * 60} fill="rgba(16, 185, 129, 0.08)" />
+              {/* RSI Polyline */}
+              <path
+                d={'M ' + candles.map((c, i) => `${getX(i)},${70 - ((c.rsi ?? 50.0) / 100) * 60 - 5}`).join(' L ')}
+                fill="none"
+                stroke="#f59e0b"
+                strokeWidth="2"
+              />
+            </svg>
+          </div>
+        )}
       </div>
     );
 
@@ -987,6 +1036,115 @@ export default function App() {
                     Hourly Vol σ₁ₕ: <strong>{goldData.hourly_volatility_pct}%</strong>
                   </div>
                 </div>
+              </div>
+
+              {/* Machine Learning Autonomous Directional Intelligence Engine Card */}
+              <div style={{ background: '#0a0f1d', border: '1px solid #1e3a8a', borderRadius: '8px', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '20px' }}>🤖</span>
+                    <div>
+                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        Autonomous Directional Intelligence Engine
+                        <span style={{ fontSize: '10px', background: '#1e3a8a', color: '#93c5fd', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
+                          RLS λ=0.98 + BAYESIAN POSTERIOR
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#60a5fa', marginTop: '2px' }}>
+                        {goldData.ml_model_name || 'Online Adaptive RLS + Bayesian Probability Engine'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#111827', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e293b' }}>
+                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>Consensus ML Direction:</span>
+                      <span
+                        style={{
+                          fontWeight: '900',
+                          fontSize: '13px',
+                          color:
+                            goldData.ml_consensus_signal === 'BUY'
+                              ? '#10b981'
+                              : goldData.ml_consensus_signal === 'SELL'
+                              ? '#ef4444'
+                              : '#f59e0b',
+                        }}
+                      >
+                        {goldData.ml_consensus_signal === 'BUY' ? '▲ BUY / BULLISH' : goldData.ml_consensus_signal === 'SELL' ? '▼ SELL / BEARISH' : '● NEUTRAL / HOLD'}
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#111827', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e293b' }}>
+                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>Conviction:</span>
+                      <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#38bdf8' }}>
+                        {goldData.ml_confidence_score ? goldData.ml_confidence_score.toFixed(1) : '88.5'}%
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#111827', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e293b' }}>
+                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>Forward Proj. Shift:</span>
+                      <span
+                        style={{
+                          fontWeight: 'bold',
+                          fontSize: '13px',
+                          color: (goldData.ml_expected_shift_pct || 0) >= 0 ? '#10b981' : '#ef4444',
+                        }}
+                      >
+                        {(goldData.ml_expected_shift_pct || 0) >= 0 ? '+' : ''}
+                        {goldData.ml_expected_shift_pct}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Calibrated Directional Probability Meter */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', fontWeight: 'bold', marginBottom: '6px' }}>
+                    <span style={{ color: '#10b981' }}>▲ P(UP): {goldData.ml_prediction_prob_up}%</span>
+                    <span style={{ color: '#94a3b8' }}>Continuous Bayesian Directional Probability</span>
+                    <span style={{ color: '#ef4444' }}>P(DOWN): {goldData.ml_prediction_prob_down}% ▼</span>
+                  </div>
+                  <div style={{ height: '10px', background: '#111827', borderRadius: '5px', overflow: 'hidden', display: 'flex', border: '1px solid #1f2937' }}>
+                    <div
+                      style={{
+                        width: `${goldData.ml_prediction_prob_up}%`,
+                        background: 'linear-gradient(90deg, #059669 0%, #10b981 100%)',
+                        transition: 'width 0.4s ease',
+                      }}
+                    />
+                    <div
+                      style={{
+                        width: `${goldData.ml_prediction_prob_down}%`,
+                        background: 'linear-gradient(90deg, #ef4444 0%, #b91c1c 100%)',
+                        transition: 'width 0.4s ease',
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* Active Feature Driver Badges */}
+                {goldData.ml_driving_features && goldData.ml_driving_features.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '2px' }}>
+                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>Top Model Drivers:</span>
+                    {goldData.ml_driving_features.map((feat, fIdx) => (
+                      <span
+                        key={fIdx}
+                        style={{
+                          fontSize: '11px',
+                          background: feat.includes('+') ? '#064e3b' : feat.includes('-') ? '#450a0a' : '#1e293b',
+                          color: feat.includes('+') ? '#a7f3d0' : feat.includes('-') ? '#fca5a5' : '#cbd5e1',
+                          border: '1px solid ' + (feat.includes('+') ? '#059669' : feat.includes('-') ? '#991b1b' : '#334155'),
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          fontFamily: 'monospace',
+                        }}
+                      >
+                        {feat}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Strategy Overlays Selector Pills directly above live chart */}
