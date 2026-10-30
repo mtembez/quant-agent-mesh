@@ -15,6 +15,7 @@ from core.models import OrderSide, OrderType
 from core.swarm import QuantSwarmCoordinator
 from core.live_feed import get_live_pair_prices
 from analytics.auto_learner import OnlineAdaptivePairsPredictor
+from analytics.gold_analyzer import SpotGoldAnalyzer
 import os
 from starlette.staticfiles import StaticFiles
 from starlette.routing import Mount
@@ -22,6 +23,7 @@ from starlette.routing import Mount
 coordinator = QuantSwarmCoordinator()
 connected_websockets: List[WebSocket] = []
 adaptive_predictor = OnlineAdaptivePairsPredictor()
+gold_analyzer = SpotGoldAnalyzer()
 
 
 async def health_live(request: Request):
@@ -218,6 +220,31 @@ async def live_predict_endpoint(request: Request):
     return JSONResponse(pred_res.model_dump(mode="json"))
 
 
+async def gold_analyze_endpoint(request: Request):
+    """Comprehensive Spot Gold (XAU/USD) live analysis, strategy overlays, and forward ML predictions."""
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    else:
+        body = dict(request.query_params)
+
+    timeframe = body.get("timeframe", "1h")
+    active_strategy = body.get("strategy", "ema")
+    try:
+        spot_px = float(body.get("spot_price", 3984.66))
+    except (ValueError, TypeError):
+        spot_px = 3984.66
+
+    res = gold_analyzer.analyze(
+        timeframe=timeframe,
+        active_strategy=active_strategy,
+        custom_spot_price=spot_px,
+    )
+    return JSONResponse(res.model_dump(mode="json"))
+
+
 dist_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "frontend", "dist")
 
 routes = [
@@ -229,6 +256,7 @@ routes = [
     Route("/api/v1/backtest", execute_backtest_endpoint, methods=["POST"]),
     Route("/api/v1/pairs/analyze", analyze_pairs_endpoint, methods=["POST"]),
     Route("/api/v1/predict/live", live_predict_endpoint, methods=["GET", "POST"]),
+    Route("/api/v1/gold/analyze", gold_analyze_endpoint, methods=["GET", "POST"]),
     Route("/api/v1/orders", submit_order_endpoint, methods=["POST"]),
     Route("/api/v1/portfolio", get_portfolio_endpoint, methods=["GET"]),
     WebSocketRoute("/ws/market-feed", websocket_market_feed),

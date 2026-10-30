@@ -9,10 +9,18 @@ export default function App() {
   });
 
   const [strategies, setStrategies] = useState([]);
-  const [activeTab, setActiveTab] = useState('predict'); // predict | leaderboard | lab | pairs | execution | metrics
+  const [activeTab, setActiveTab] = useState('gold'); // gold | predict | leaderboard | lab | pairs | execution | metrics
   const [regime, setRegime] = useState('MEAN_REVERTING');
   const [metricsText, setMetricsText] = useState('');
-  const [statusMessage, setStatusMessage] = useState('Live Auto-Learning Statistical Arbitrage Active');
+  const [statusMessage, setStatusMessage] = useState('Spot Gold Live Alpha Terminal & ML Predictor Active');
+
+  // Spot Gold Terminal State (Calibrated to TradingView OANDA Spot Gold ~$3,984.66)
+  const [goldData, setGoldData] = useState(null);
+  const [goldTimeframe, setGoldTimeframe] = useState('1h'); // 1h | 4h | 1D
+  const [goldStrategy, setGoldStrategy] = useState('ema'); // ema | bollinger | rsi | ou
+  const [goldSpotPrice, setGoldSpotPrice] = useState(3984.66);
+  const [goldAutoRefresh, setGoldAutoRefresh] = useState(true);
+  const [loadingGold, setLoadingGold] = useState(false);
 
   // Live Auto-Learning Predictor State
   const [livePrediction, setLivePrediction] = useState(null);
@@ -27,29 +35,33 @@ export default function App() {
   const [latestBacktest, setLatestBacktest] = useState(null);
 
   // Execution inputs
-  const [orderSymbol, setOrderSymbol] = useState('BTC/USD');
-  const [orderQty, setOrderQty] = useState(1.0);
+  const [orderSymbol, setOrderSymbol] = useState('XAU/USD');
+  const [orderQty, setOrderQty] = useState(5.0);
   const [orderSide, setOrderSide] = useState('BUY');
 
   // Pairs Trading inputs
-  const [pairsAssetA, setPairsAssetA] = useState('BTC/USD');
-  const [pairsAssetB, setPairsAssetB] = useState('ETH/USD');
+  const [pairsAssetA, setPairsAssetA] = useState('XAU/USD');
+  const [pairsAssetB, setPairsAssetB] = useState('JPY/USD');
   const [pairsResult, setPairsResult] = useState(null);
 
   useEffect(() => {
     fetchPortfolio();
     fetchStrategies();
+    fetchGoldAnalysis(goldTimeframe, goldStrategy, goldSpotPrice);
     fetchLivePrediction(livePairKey);
 
     const interval = setInterval(() => {
       fetchPortfolio();
-      if (autoRefresh) {
+      if (goldAutoRefresh && activeTab === 'gold') {
+        fetchGoldAnalysis(goldTimeframe, goldStrategy, goldSpotPrice);
+      }
+      if (autoRefresh && activeTab === 'predict') {
         fetchLivePrediction(livePairKey);
       }
     }, 3500);
 
     return () => clearInterval(interval);
-  }, [autoRefresh, livePairKey]);
+  }, [goldAutoRefresh, autoRefresh, livePairKey, goldTimeframe, goldStrategy, goldSpotPrice, activeTab]);
 
   const fetchPortfolio = async () => {
     try {
@@ -71,6 +83,22 @@ export default function App() {
     } catch (e) {}
   };
 
+  const fetchGoldAnalysis = async (tf = goldTimeframe, strat = goldStrategy, px = goldSpotPrice) => {
+    setLoadingGold(true);
+    try {
+      const res = await fetch(`/api/v1/gold/analyze?timeframe=${encodeURIComponent(tf)}&strategy=${encodeURIComponent(strat)}&spot_price=${encodeURIComponent(px)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setGoldData(data);
+        setStatusMessage(`Spot Gold analyzed [${tf.toUpperCase()}] -> Active Model: ${strat.toUpperCase()} | Signal: ${data.strategies[strat]?.current_signal || 'HOLD'}`);
+      }
+    } catch (e) {
+      console.error('Failed to fetch gold analysis:', e);
+    } finally {
+      setLoadingGold(false);
+    }
+  };
+
   const fetchLivePrediction = async (pairKey = livePairKey) => {
     setLoadingPrediction(true);
     const [symA, symB] = pairKey.split('__');
@@ -79,7 +107,6 @@ export default function App() {
       if (res.ok) {
         const data = await res.json();
         setLivePrediction(data);
-        setStatusMessage(`Prediction calibrated (${data.data_source}) -> Signal: ${data.action_signal} | Accuracy: ${data.online_accuracy_pct}%`);
       }
     } catch (e) {
       console.error('Failed to fetch prediction:', e);
@@ -94,7 +121,7 @@ export default function App() {
       const res = await fetch('/api/v1/research', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ symbol: 'BTC/USD', n_bars: 350 }),
+        body: JSON.stringify({ symbol: 'XAU/USD', n_bars: 350 }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -116,7 +143,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           strategy: labStrategy,
-          symbol: 'ETH/USD',
+          symbol: 'XAU/USD',
           window: parseInt(labWindow),
           num_std: parseFloat(labStd),
         }),
@@ -164,7 +191,7 @@ export default function App() {
           symbol: orderSymbol,
           side: orderSide,
           quantity: parseFloat(orderQty),
-          market_price: 100.0,
+          market_price: goldSpotPrice,
         }),
       });
       if (res.ok) {
@@ -187,7 +214,242 @@ export default function App() {
     } catch (e) {}
   };
 
-  // Helper to render SVG Prediction Chart
+  // =========================================================================
+  // RENDER DEDICATED SPOT GOLD CHART WITH STRATEGY OVERLAYS & FORWARD ML CONE
+  // =========================================================================
+  const renderSpotGoldChart = () => {
+    if (!goldData || !goldData.candles || goldData.candles.length === 0) {
+      return <p style={{ color: '#94a3b8' }}>Loading live Spot Gold candles & strategy overlays...</p>;
+    }
+
+    const candles = goldData.candles;
+    const traj = goldData.forward_trajectory || [];
+
+    // Collect all price values to compute Y-scale
+    const allPrices = [];
+    candles.forEach((c) => {
+      allPrices.push(c.high, c.low, c.close, c.open);
+      if (goldStrategy === 'ema') {
+        if (c.ema_fast) allPrices.push(c.ema_fast);
+        if (c.ema_slow) allPrices.push(c.ema_slow);
+      } else if (goldStrategy === 'bollinger') {
+        if (c.boll_upper) allPrices.push(c.boll_upper);
+        if (c.boll_lower) allPrices.push(c.boll_lower);
+      } else if (goldStrategy === 'ou') {
+        if (c.ou_equilibrium) allPrices.push(c.ou_equilibrium);
+      }
+    });
+
+    traj.forEach((t) => {
+      allPrices.push(t.expected_price, t.low_95, t.high_95);
+    });
+
+    const minY = Math.min(...allPrices);
+    const maxY = Math.max(...allPrices);
+    const rangeY = Math.max(1.0, maxY - minY);
+
+    const width = 940;
+    const height = 340;
+    const padX = 55;
+    const padY = 35;
+
+    const totalSteps = candles.length + traj.length - 1;
+
+    const getX = (idx) => padX + (idx / totalSteps) * (width - 2 * padX);
+    const getY = (val) => height - padY - ((val - minY) / rangeY) * (height - 2 * padY);
+
+    const candleWidth = Math.max(3, (width - 2 * padX) / totalSteps * 0.65);
+
+    // Build Forward Prediction Trajectory Coordinates
+    const nowIdx = candles.length - 1;
+    const nowCoord = {
+      x: getX(nowIdx),
+      y: getY(candles[nowIdx].close),
+      lowY: getY(candles[nowIdx].close),
+      highY: getY(candles[nowIdx].close),
+    };
+
+    const trajCoords = [
+      nowCoord,
+      ...traj.map((t, i) => ({
+        x: getX(nowIdx + 1 + i),
+        y: getY(t.expected_price),
+        lowY: getY(t.low_95),
+        highY: getY(t.high_95),
+      })),
+    ];
+
+    const trajPath = 'M ' + trajCoords.map((c) => `${c.x},${c.y}`).join(' L ');
+    const coneTop = trajCoords.map((c) => `${c.x},${c.highY}`).join(' L ');
+    const coneBottom = trajCoords.slice().reverse().map((c) => `${c.x},${c.lowY}`).join(' L ');
+    const conePolygon = `M ${coneTop} L ${coneBottom} Z`;
+
+    // Strategy Overlay Lines
+    let emaFastPath = '';
+    let emaSlowPath = '';
+    let bollUpperPath = '';
+    let bollMidPath = '';
+    let bollLowerPath = '';
+    let bollChannelPolygon = '';
+    let ouEquilibriumY = null;
+
+    if (goldStrategy === 'ema') {
+      const fastPts = candles.map((c, i) => `${getX(i)},${getY(c.ema_fast || c.close)}`).join(' L ');
+      emaFastPath = `M ${fastPts}`;
+      const slowPts = candles.map((c, i) => `${getX(i)},${getY(c.ema_slow || c.close)}`).join(' L ');
+      emaSlowPath = `M ${slowPts}`;
+    } else if (goldStrategy === 'bollinger') {
+      const upPts = candles.map((c, i) => ({ x: getX(i), y: getY(c.boll_upper || c.close) }));
+      const lowPts = candles.map((c, i) => ({ x: getX(i), y: getY(c.boll_lower || c.close) }));
+      const midPts = candles.map((c, i) => `${getX(i)},${getY(c.boll_mid || c.close)}`).join(' L ');
+      bollUpperPath = 'M ' + upPts.map((p) => `${p.x},${p.y}`).join(' L ');
+      bollMidPath = `M ${midPts}`;
+      bollLowerPath = 'M ' + lowPts.map((p) => `${p.x},${p.y}`).join(' L ');
+
+      const topSeg = upPts.map((p) => `${p.x},${p.y}`).join(' L ');
+      const botSeg = lowPts.slice().reverse().map((p) => `${p.x},${p.y}`).join(' L ');
+      bollChannelPolygon = `M ${topSeg} L ${botSeg} Z`;
+    } else if (goldStrategy === 'ou' && candles[0].ou_equilibrium) {
+      ouEquilibriumY = getY(candles[0].ou_equilibrium);
+    }
+
+    return (
+      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: '#0a0f1d', borderRadius: '8px', border: '1px solid #1e293b' }}>
+        {/* Horizontal Price Grid Lines */}
+        {[0, 0.25, 0.5, 0.75, 1.0].map((frac, idx) => {
+          const val = minY + frac * rangeY;
+          const y = getY(val);
+          return (
+            <g key={idx}>
+              <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="#1e293b" strokeDasharray="3 3" />
+              <text x={padX - 8} y={y + 4} fill="#64748b" fontSize="10" textAnchor="end" fontFamily="monospace">
+                ${val.toFixed(1)}
+              </text>
+            </g>
+          );
+        })}
+
+        {/* Strategy Layer: Bollinger Bands Channel Fill */}
+        {goldStrategy === 'bollinger' && bollChannelPolygon && (
+          <path d={bollChannelPolygon} fill="rgba(59, 130, 246, 0.08)" stroke="none" />
+        )}
+
+        {/* Strategy Layer: Bollinger Band Upper & Lower Lines */}
+        {goldStrategy === 'bollinger' && (
+          <>
+            <path d={bollUpperPath} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 2" />
+            <path d={bollMidPath} fill="none" stroke="#3b82f6" strokeWidth="1.5" />
+            <path d={bollLowerPath} fill="none" stroke="#10b981" strokeWidth="1.5" strokeDasharray="4 2" />
+          </>
+        )}
+
+        {/* Strategy Layer: O-U Stationary Equilibrium Line */}
+        {goldStrategy === 'ou' && ouEquilibriumY !== null && (
+          <g>
+            <line x1={padX} y1={ouEquilibriumY} x2={width - padX} y2={ouEquilibriumY} stroke="#eab308" strokeWidth="2" strokeDasharray="6 4" />
+            <text x={width - padX + 5} y={ouEquilibriumY + 4} fill="#eab308" fontSize="11" fontFamily="monospace" fontWeight="bold">
+              μ Equilibrium (${candles[0].ou_equilibrium})
+            </text>
+          </g>
+        )}
+
+        {/* Candlesticks (High/Low Wick + Open/Close Body) */}
+        {candles.map((c, i) => {
+          const cx = getX(i);
+          const yHigh = getY(c.high);
+          const yLow = getY(c.low);
+          const yOpen = getY(c.open);
+          const yClose = getY(c.close);
+
+          const isBull = c.close >= c.open;
+          const color = isBull ? '#10b981' : '#ef4444';
+          const topBody = Math.min(yOpen, yClose);
+          const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
+
+          return (
+            <g key={i}>
+              {/* Wick */}
+              <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={color} strokeWidth="1.2" />
+              {/* Body */}
+              <rect
+                x={cx - candleWidth / 2}
+                y={topBody}
+                width={candleWidth}
+                height={bodyHeight}
+                fill={isBull ? '#065f46' : '#7f1d1d'}
+                stroke={color}
+                strokeWidth="1.2"
+                rx="1"
+              />
+
+              {/* Active Strategy Signal Marker */}
+              {c.active_signal === 1 && (
+                <polygon points={`${cx},${yLow + 12} ${cx - 5},${yLow + 20} ${cx + 5},${yLow + 20}`} fill="#10b981" />
+              )}
+              {c.active_signal === -1 && (
+                <polygon points={`${cx},${yHigh - 12} ${cx - 5},${yHigh - 20} ${cx + 5},${yHigh - 20}`} fill="#ef4444" />
+              )}
+            </g>
+          );
+        })}
+
+        {/* Strategy Layer: Dual EMA Fast & Slow Lines */}
+        {goldStrategy === 'ema' && (
+          <>
+            <path d={emaFastPath} fill="none" stroke="#06b6d4" strokeWidth="2" />
+            <path d={emaSlowPath} fill="none" stroke="#a855f7" strokeWidth="2" />
+          </>
+        )}
+
+        {/* Transition Divider (NOW) */}
+        <line x1={nowCoord.x} y1={padY} x2={nowCoord.x} y2={height - padY} stroke="#f97316" strokeDasharray="3 3" strokeWidth="1.8" />
+        <circle cx={nowCoord.x} cy={nowCoord.y} r="6" fill="#f97316" stroke="#fff" strokeWidth="2" />
+        <text x={nowCoord.x - 14} y={padY - 8} fill="#f97316" fontSize="11" fontWeight="bold">NOW</text>
+
+        {/* Forward Machine Learning 95% Confidence Cone */}
+        <path d={conePolygon} fill="rgba(236, 72, 153, 0.16)" stroke="none" />
+
+        {/* Forward ML Trajectory Path */}
+        <path d={trajPath} fill="none" stroke="#ec4899" strokeWidth="2.5" strokeDasharray="5 3" />
+
+        {/* Forward Trajectory Milestone Dots */}
+        {trajCoords.slice(1).map((c, i) => (
+          <g key={i}>
+            <circle cx={c.x} cy={c.y} r="4" fill="#ec4899" stroke="#fff" strokeWidth="1" />
+            <text x={c.x - 8} y={height - 12} fill="#94a3b8" fontSize="10" fontFamily="monospace">
+              +{traj[i].step_hour}h
+            </text>
+          </g>
+        ))}
+
+        {/* Top Legends */}
+        <text x={padX} y={20} fill="#f8fafc" fontSize="12" fontWeight="bold">
+          XAU/USD Live Spot Candles ({goldTimeframe.toUpperCase()})
+        </text>
+
+        {goldStrategy === 'ema' && (
+          <g>
+            <text x={padX + 260} y={20} fill="#06b6d4" fontSize="11" fontWeight="bold">● Fast EMA (12)</text>
+            <text x={padX + 380} y={20} fill="#a855f7" fontSize="11" fontWeight="bold">● Slow EMA (26)</text>
+          </g>
+        )}
+
+        {goldStrategy === 'bollinger' && (
+          <g>
+            <text x={padX + 260} y={20} fill="#ef4444" fontSize="11" fontWeight="bold">● Upper Band</text>
+            <text x={padX + 370} y={20} fill="#3b82f6" fontSize="11" fontWeight="bold">● 20-SMA</text>
+            <text x={padX + 450} y={20} fill="#10b981" fontSize="11" fontWeight="bold">● Lower Band</text>
+          </g>
+        )}
+
+        <text x={nowCoord.x + 18} y={20} fill="#ec4899" fontSize="12" fontWeight="bold">
+          ► ML Forward Horizon Forecast & 95% Confidence Cone
+        </text>
+      </svg>
+    );
+  };
+
+  // Helper for live pairs prediction chart
   const renderPredictionChart = () => {
     if (!livePrediction || !livePrediction.historical_spreads || livePrediction.historical_spreads.length === 0) {
       return <p style={{ color: '#94a3b8' }}>Loading real-time predictive trajectory...</p>;
@@ -218,11 +480,9 @@ export default function App() {
     const getX = (idx) => padX + (idx / totalSteps) * (width - 2 * padX);
     const getY = (val) => height - padY - ((val - minY) / rangeY) * (height - 2 * padY);
 
-    // Build historical spread line
     const histPoints = hist.map((val, i) => `${getX(i)},${getY(val)}`).join(' L ');
     const histPath = `M ${histPoints}`;
 
-    // Build trajectory path starting from last historical point
     const startIdx = hist.length - 1;
     const trajCoords = [
       { x: getX(startIdx), y: getY(hist[startIdx]), lowY: getY(hist[startIdx]), highY: getY(hist[startIdx]) },
@@ -235,34 +495,19 @@ export default function App() {
     ];
 
     const trajPath = 'M ' + trajCoords.map((c) => `${c.x},${c.y}`).join(' L ');
-
-    // Build 95% confidence cone polygon
     const coneTop = trajCoords.map((c) => `${c.x},${c.highY}`).join(' L ');
-    const coneBottom = trajCoords
-      .slice()
-      .reverse()
-      .map((c) => `${c.x},${c.lowY}`)
-      .join(' L ');
+    const coneBottom = trajCoords.slice().reverse().map((c) => `${c.x},${c.lowY}`).join(' L ');
     const conePolygon = `M ${coneTop} L ${coneBottom} Z`;
 
     const muY = getY(livePrediction.ou_mu);
 
     return (
       <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: '#0a0f1d', borderRadius: '8px', border: '1px solid #1e293b' }}>
-        {/* Grid and Mean Line */}
         <line x1={padX} y1={muY} x2={width - padX} y2={muY} stroke="#eab308" strokeDasharray="4 4" strokeWidth="1.5" />
         <text x={width - padX + 5} y={muY + 4} fill="#eab308" fontSize="11" fontFamily="monospace">μ (Equilibrium)</text>
-
-        {/* 95% Confidence Cone */}
         <path d={conePolygon} fill="rgba(168, 85, 247, 0.15)" stroke="none" />
-
-        {/* Historical Spread Line */}
         <path d={histPath} fill="none" stroke="#38bdf8" strokeWidth="2.5" />
-
-        {/* Forecast Trajectory Line */}
         <path d={trajPath} fill="none" stroke="#ec4899" strokeWidth="2.5" strokeDasharray="5 3" />
-
-        {/* Forecast Dots */}
         {trajCoords.slice(1).map((c, i) => (
           <g key={i}>
             <circle cx={c.x} cy={c.y} r="4.5" fill="#ec4899" />
@@ -271,13 +516,9 @@ export default function App() {
             </text>
           </g>
         ))}
-
-        {/* Transition Divider (NOW) */}
         <line x1={getX(startIdx)} y1={padY} x2={getX(startIdx)} y2={height - padY} stroke="#f97316" strokeDasharray="2 2" strokeWidth="1.5" />
         <circle cx={getX(startIdx)} cy={getY(hist[startIdx])} r="6" fill="#f97316" stroke="#fff" strokeWidth="1.5" />
         <text x={getX(startIdx) - 15} y={padY - 8} fill="#f97316" fontSize="11" fontWeight="bold">NOW</text>
-
-        {/* Axis Labels */}
         <text x={padX} y={20} fill="#38bdf8" fontSize="12" fontWeight="bold">Historical Spread (Past 30 Bars)</text>
         <text x={getX(startIdx) + 20} y={20} fill="#ec4899" fontSize="12" fontWeight="bold">► Forecast Trajectory (Ornstein-Uhlenbeck + 95% Cone)</text>
       </svg>
@@ -293,7 +534,7 @@ export default function App() {
             QUANT SENTINEL <span style={{ fontSize: '13px', background: '#065f46', color: '#d1fae5', padding: '3px 8px', borderRadius: '4px', marginLeft: '8px' }}>v1.2.0 LIVE</span>
           </h1>
           <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#94a3b8' }}>
-            Autonomous Alpha Swarm: Real-Time Auto-Learning Pairs Predictor, Vectorized Backtesting & Cholesky Risk Mesh
+            Spot Gold Quantitative Terminal: Live Strategy Appearance Overlays & Machine Learning Direction Forecaster
           </p>
         </div>
         <div style={{ display: 'flex', gap: '14px', fontSize: '13px' }}>
@@ -304,7 +545,7 @@ export default function App() {
             Cash: <strong style={{ color: '#38bdf8' }}>${portfolio.cash.toLocaleString()}</strong>
           </div>
           <div style={{ background: '#111827', padding: '8px 12px', borderRadius: '6px' }}>
-            Regime: <strong style={{ color: '#f59e0b' }}>{regime}</strong>
+            Regime: <strong style={{ color: '#f59e0b' }}>{goldData?.market_regime || regime}</strong>
           </div>
         </div>
       </header>
@@ -323,7 +564,8 @@ export default function App() {
       {/* Navigation Tabs */}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
         {[
-          { id: 'predict', label: '🔮 Live Auto-Learning Predictor' },
+          { id: 'gold', label: '🥇 Spot Gold Terminal (Live Chart & ML)' },
+          { id: 'predict', label: '🔮 Live Pairs Predictor' },
           { id: 'leaderboard', label: '🏆 Alpha Hypothesis Leaderboard' },
           { id: 'lab', label: '🔬 Vectorized Backtest Lab' },
           { id: 'pairs', label: '⚖️ Statistical Arbitrage (Pairs)' },
@@ -353,11 +595,368 @@ export default function App() {
       </div>
 
       {/* ========================================================================= */}
-      {/* TAB 0: LIVE AUTO-LEARNING PREDICTOR                                      */}
+      {/* TAB: SPOT GOLD TERMINAL (LIVE CANDLESTICKS, STRATEGY OVERLAYS & ML)       */}
+      {/* ========================================================================= */}
+      {activeTab === 'gold' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          {/* Top Gold Controls & Timeframe Bar (Matching OANDA / TradingView Tabs) */}
+          <div style={{ background: '#111827', padding: '16px 20px', borderRadius: '8px', border: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+            {/* Timeframe Switcher (1h, 4h, 1D) */}
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <span style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold' }}>Timeframe:</span>
+              {[
+                { id: '1h', label: '1h (Hourly)' },
+                { id: '4h', label: '4h (4-Hour)' },
+                { id: '1D', label: '1D (Daily)' },
+              ].map((tf) => (
+                <button
+                  key={tf.id}
+                  onClick={() => {
+                    setGoldTimeframe(tf.id);
+                    fetchGoldAnalysis(tf.id, goldStrategy, goldSpotPrice);
+                  }}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: '5px',
+                    border: '1px solid ' + (goldTimeframe === tf.id ? '#10b981' : '#374151'),
+                    background: goldTimeframe === tf.id ? '#065f46' : '#1f2937',
+                    color: goldTimeframe === tf.id ? '#a7f3d0' : '#d1d5db',
+                    fontSize: '12px',
+                    fontWeight: 'bold',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {tf.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Custom Benchmark Spot Price Input */}
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <label style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold' }}>Spot Reference ($):</label>
+              <input
+                type="number"
+                step="0.01"
+                value={goldSpotPrice}
+                onChange={(e) => setGoldSpotPrice(parseFloat(e.target.value) || 3984.66)}
+                style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '110px', fontWeight: 'bold' }}
+              />
+              <button
+                onClick={() => fetchGoldAnalysis(goldTimeframe, goldStrategy, goldSpotPrice)}
+                disabled={loadingGold}
+                style={{ background: '#059669', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+              >
+                {loadingGold ? 'Analyzing...' : '⚡ Refresh Analysis'}
+              </button>
+              <button
+                onClick={() => setGoldAutoRefresh(!goldAutoRefresh)}
+                style={{
+                  background: goldAutoRefresh ? '#065f46' : '#374151',
+                  color: goldAutoRefresh ? '#a7f3d0' : '#d1d5db',
+                  border: '1px solid ' + (goldAutoRefresh ? '#10b981' : '#4b5563'),
+                  padding: '6px 10px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                }}
+              >
+                {goldAutoRefresh ? '● Live Polling' : '○ Paused'}
+              </button>
+            </div>
+          </div>
+
+          {goldData && (
+            <>
+              {/* Hero Spot Gold Price & Microstructure Cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
+                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>XAU/USD Spot Quote</div>
+                  <div style={{ fontSize: '24px', fontWeight: 'bold', marginTop: '4px', color: '#eab308' }}>
+                    ${goldData.current_spot_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  </div>
+                  <div style={{ fontSize: '12px', marginTop: '4px', color: goldData.daily_change_pct >= 0 ? '#10b981' : '#ef4444', fontWeight: 'bold' }}>
+                    {goldData.daily_change_pct >= 0 ? '+' : ''}{goldData.daily_change_pct}% (${goldData.daily_change_dollars >= 0 ? '+' : ''}{goldData.daily_change_dollars.toFixed(2)})
+                  </div>
+                </div>
+
+                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Parkinson & GK Volatility</div>
+                  <div style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '4px', color: '#38bdf8' }}>
+                    {goldData.parkinson_volatility_pct}% <span style={{ fontSize: '12px', color: '#94a3b8' }}>Parkinson</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#a855f7', marginTop: '4px' }}>
+                    Garman-Klass: <strong>{goldData.garman_klass_volatility_pct}%</strong>
+                  </div>
+                </div>
+
+                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Cross-Asset Valuations</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#f59e0b' }}>
+                    ¥{goldData.macro_gold_in_jpy.toLocaleString()} <span style={{ fontSize: '11px', color: '#94a3b8' }}>Gold in Yen</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
+                    BTC / Gold Ratio: <strong>{goldData.macro_btc_to_gold_ratio}x</strong>
+                  </div>
+                </div>
+
+                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Market Regime & Bias</div>
+                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#10b981' }}>
+                    {goldData.market_regime}
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
+                    Hourly Vol σ₁ₕ: <strong>{goldData.hourly_volatility_pct}%</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Strategy Overlays Selector Pills directly above live chart */}
+              <div style={{ background: '#111827', padding: '14px 20px', borderRadius: '8px', border: '1px solid #1f2937', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
+                <span style={{ fontSize: '13px', color: '#f8fafc', fontWeight: 'bold' }}>
+                  📊 Strategy Appearance on Chart (Switch to see indicators on candles):
+                </span>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  {[
+                    { id: 'ema', label: '⚡ Dual EMA Cross (12/26)' },
+                    { id: 'bollinger', label: '🌊 Bollinger Bands (20, 2σ)' },
+                    { id: 'rsi', label: '🎯 RSI Momentum (14)' },
+                    { id: 'ou', label: '⚖️ O-U Equilibrium' },
+                  ].map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => {
+                        setGoldStrategy(s.id);
+                        fetchGoldAnalysis(goldTimeframe, s.id, goldSpotPrice);
+                      }}
+                      style={{
+                        padding: '8px 14px',
+                        borderRadius: '6px',
+                        border: '1px solid ' + (goldStrategy === s.id ? '#059669' : '#374151'),
+                        background: goldStrategy === s.id ? '#059669' : '#1f2937',
+                        color: '#f8fafc',
+                        fontSize: '12px',
+                        fontWeight: 'bold',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Live Candlestick & Machine Learning Forecast Chart */}
+              <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                {renderSpotGoldChart()}
+              </div>
+
+              {/* Active Strategy Analysis & Current Signal Banner */}
+              {goldData.strategies[goldStrategy] && (
+                <div
+                  style={{
+                    padding: '16px 20px',
+                    borderRadius: '8px',
+                    background:
+                      goldData.strategies[goldStrategy].current_signal === 'BUY'
+                        ? 'linear-gradient(90deg, #064e3b 0%, #022c22 100%)'
+                        : goldData.strategies[goldStrategy].current_signal === 'SELL'
+                        ? 'linear-gradient(90deg, #7f1d1d 0%, #450a0a 100%)'
+                        : 'linear-gradient(90deg, #1e293b 0%, #0f172a 100%)',
+                    border:
+                      '1px solid ' +
+                      (goldData.strategies[goldStrategy].current_signal === 'BUY'
+                        ? '#10b981'
+                        : goldData.strategies[goldStrategy].current_signal === 'SELL'
+                        ? '#ef4444'
+                        : '#3b82f6'),
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      {goldData.strategies[goldStrategy].strategy_name} — Active Strategy Signal
+                    </div>
+                    <div style={{ fontSize: '24px', fontWeight: '900', color: '#f8fafc', marginTop: '2px' }}>
+                      {goldData.strategies[goldStrategy].current_signal} SIGNAL
+                    </div>
+                    <div style={{ fontSize: '13px', color: '#cbd5e1', marginTop: '4px' }}>
+                      {goldData.strategies[goldStrategy].thesis}
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '20px', textAlign: 'right' }}>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Sharpe Ratio</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#38bdf8' }}>
+                        {goldData.strategies[goldStrategy].annualized_sharpe}
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Total Return</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: goldData.strategies[goldStrategy].total_return_pct >= 0 ? '#10b981' : '#ef4444' }}>
+                        {goldData.strategies[goldStrategy].total_return_pct}%
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Win Rate</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f59e0b' }}>
+                        {goldData.strategies[goldStrategy].win_rate_pct}%
+                      </div>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Trades</div>
+                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f8fafc' }}>
+                        {goldData.strategies[goldStrategy].total_trades}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Machine Learning Forward Direction Forecast Cards */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
+                {/* 1-Hour Horizon Prediction Card */}
+                <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px', color: '#10b981' }}>🔮 1-Hour Forward Probabilistic Target</h3>
+                    <span style={{ fontSize: '12px', background: '#064e3b', color: '#a7f3d0', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                      1-HOUR FORECAST
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginTop: '14px' }}>
+                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Most Probable Median</div>
+                      <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#38bdf8' }}>
+                        ${goldData.forecast_1h.median_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </div>
+                      <div style={{ fontSize: '11px', color: goldData.forecast_1h.expected_change_pct >= 0 ? '#10b981' : '#ef4444', marginTop: '2px' }}>
+                        {goldData.forecast_1h.expected_change_pct > 0 ? '+' : ''}{goldData.forecast_1h.expected_change_pct}% expected shift
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Directional Probabilities</div>
+                      <div style={{ fontSize: '16px', fontWeight: 'bold', marginTop: '4px' }}>
+                        <span style={{ color: '#10b981' }}>▲ {goldData.forecast_1h.prob_up}% Up</span>
+                        <span style={{ color: '#94a3b8', margin: '0 6px' }}>|</span>
+                        <span style={{ color: '#ef4444' }}>▼ {goldData.forecast_1h.prob_down}% Dn</span>
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Expected Parkinson Range</div>
+                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc', marginTop: '4px' }}>
+                        ${goldData.forecast_1h.expected_low.toFixed(2)} — ${goldData.forecast_1h.expected_high.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>Spread: ${goldData.forecast_1h.expected_range_dollars}</div>
+                    </div>
+
+                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>95% Confidence Band</div>
+                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#a855f7', marginTop: '4px' }}>
+                        ${goldData.forecast_1h.low_95.toFixed(2)} — ${goldData.forecast_1h.high_95.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>2.5% to 97.5% Percentile</div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 24-Hour Horizon Prediction Card */}
+                <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h3 style={{ margin: 0, fontSize: '16px', color: '#f59e0b' }}>🔮 24-Hour Forward Horizon Target</h3>
+                    <span style={{ fontSize: '12px', background: '#78350f', color: '#fde68a', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                      24-HOUR FORECAST
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginTop: '14px' }}>
+                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>24h Expected Median</div>
+                      <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#f59e0b' }}>
+                        ${goldData.forecast_24h.median_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      </div>
+                      <div style={{ fontSize: '11px', color: goldData.forecast_24h.expected_change_pct >= 0 ? '#10b981' : '#ef4444', marginTop: '2px' }}>
+                        {goldData.forecast_24h.expected_change_pct > 0 ? '+' : ''}{goldData.forecast_24h.expected_change_pct}% expected shift
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Directional Probabilities</div>
+                      <div style={{ fontSize: '16px', fontWeight: 'bold', marginTop: '4px' }}>
+                        <span style={{ color: '#10b981' }}>▲ {goldData.forecast_24h.prob_up}% Up</span>
+                        <span style={{ color: '#94a3b8', margin: '0 6px' }}>|</span>
+                        <span style={{ color: '#ef4444' }}>▼ {goldData.forecast_24h.prob_down}% Dn</span>
+                      </div>
+                    </div>
+
+                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Expected 24h High/Low</div>
+                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc', marginTop: '4px' }}>
+                        ${goldData.forecast_24h.expected_low.toFixed(2)} — ${goldData.forecast_24h.expected_high.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>Intraday Range: ${goldData.forecast_24h.expected_range_dollars}</div>
+                    </div>
+
+                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
+                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>95% Confidence Band</div>
+                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#a855f7', marginTop: '4px' }}>
+                        ${goldData.forecast_24h.low_95.toFixed(2)} — ${goldData.forecast_24h.high_95.toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>99% Tail: [${goldData.forecast_24h.low_99.toFixed(2)} — ${goldData.forecast_24h.high_99.toFixed(2)}]</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Forward Schedule Trajectory Table */}
+              <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
+                <h3 style={{ margin: '0 0 12px 0', fontSize: '15px', color: '#10b981' }}>
+                  📋 Machine Learning Forward Target Schedule (+1h to +12h Forward Projections)
+                </h3>
+                <div style={{ overflowX: 'auto' }}>
+                  <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                      <tr style={{ borderBottom: '1px solid #374151', color: '#94a3b8' }}>
+                        <th style={{ padding: '8px 10px' }}>Forecast Horizon</th>
+                        <th style={{ padding: '8px 10px' }}>Expected Median Price</th>
+                        <th style={{ padding: '8px 10px' }}>95% Confidence Interval [Low / High]</th>
+                        <th style={{ padding: '8px 10px' }}>Expected Relative Shift</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {goldData.forward_trajectory.map((t, idx) => (
+                        <tr key={idx} style={{ borderBottom: '1px solid #1f2937' }}>
+                          <td style={{ padding: '8px 10px', fontWeight: 'bold', color: '#ec4899' }}>+{t.step_hour}h Forward</td>
+                          <td style={{ padding: '8px 10px', fontFamily: 'monospace', fontWeight: 'bold', color: '#f8fafc' }}>
+                            ${t.expected_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                          </td>
+                          <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: '#a855f7' }}>
+                            [${t.low_95.toFixed(2)} , ${t.high_95.toFixed(2)}]
+                          </td>
+                          <td style={{ padding: '8px 10px', fontWeight: 'bold', color: t.expected_change_pct >= 0 ? '#10b981' : '#ef4444' }}>
+                            {t.expected_change_pct > 0 ? '+' : ''}{t.expected_change_pct}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* TAB 1: LIVE AUTO-LEARNING PREDICTOR                                      */}
       {/* ========================================================================= */}
       {activeTab === 'predict' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* Controls Bar */}
           <div style={{ background: '#111827', padding: '16px 20px', borderRadius: '8px', border: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
               <label style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold' }}>Target Trading Pair:</label>
@@ -406,7 +1005,6 @@ export default function App() {
 
           {livePrediction && (
             <>
-              {/* Telemetry KPI Cards */}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
                 <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
                   <div style={{ fontSize: '12px', color: '#94a3b8' }}>Live Quotes ({livePrediction.symbol_a} / {livePrediction.symbol_b})</div>
@@ -449,7 +1047,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Predictive Action Signal Banner */}
               <div
                 style={{
                   padding: '16px 20px',
@@ -489,52 +1086,18 @@ export default function App() {
                 </div>
               </div>
 
-              {/* SVG Forecast Chart */}
               <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
                 <h2 style={{ fontSize: '16px', color: '#10b981', marginTop: 0, marginBottom: '14px' }}>
                   📈 Real-Time Spread & Forward Projection Trajectory (Ornstein-Uhlenbeck SDE)
                 </h2>
                 {renderPredictionChart()}
               </div>
-
-              {/* Trajectory Forecast Schedule Table */}
-              <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                <h2 style={{ fontSize: '16px', color: '#10b981', marginTop: 0 }}>
-                  📋 Future Spread Targets & Expected Relative Reversion Schedule
-                </h2>
-                <div style={{ overflowX: 'auto', marginTop: '12px' }}>
-                  <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid #374151', color: '#94a3b8' }}>
-                        <th style={{ padding: '10px' }}>Forecast Horizon</th>
-                        <th style={{ padding: '10px' }}>Projected Spread Value</th>
-                        <th style={{ padding: '10px' }}>95% Confidence Interval [Low / High]</th>
-                        <th style={{ padding: '10px' }}>Expected Mean-Reversion Shift</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {livePrediction.trajectory.map((t, idx) => (
-                        <tr key={idx} style={{ borderBottom: '1px solid #1f2937' }}>
-                          <td style={{ padding: '10px', fontWeight: 'bold', color: '#ec4899' }}>+{t.horizon_hours} Hours Forward</td>
-                          <td style={{ padding: '10px', fontFamily: 'monospace', fontWeight: 'bold' }}>{t.expected_spread > 0 ? '+' : ''}{t.expected_spread}</td>
-                          <td style={{ padding: '10px', color: '#a855f7', fontFamily: 'monospace' }}>
-                            [{t.low_95 > 0 ? '+' : ''}{t.low_95} , {t.high_95 > 0 ? '+' : ''}{t.high_95}]
-                          </td>
-                          <td style={{ padding: '10px', color: t.expected_reversion_pct >= 0 ? '#10b981' : '#ef4444', fontWeight: 'bold' }}>
-                            {t.expected_reversion_pct > 0 ? '+' : ''}{t.expected_reversion_pct}%
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
             </>
           )}
         </div>
       )}
 
-      {/* Tab 1: Leaderboard */}
+      {/* Tab 2: Leaderboard */}
       {activeTab === 'leaderboard' && (
         <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
           <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>🏆 Evaluated Alpha Strategies Leaderboard</h2>
@@ -575,7 +1138,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Tab 2: Backtest Lab */}
+      {/* Tab 3: Backtest Lab */}
       {activeTab === 'lab' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
           <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
@@ -663,7 +1226,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Tab 3: Pairs Trading */}
+      {/* Tab 4: Pairs Trading */}
       {activeTab === 'pairs' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
           <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
@@ -718,7 +1281,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Tab 4: Execution Hub */}
+      {/* Tab 5: Execution Hub */}
       {activeTab === 'execution' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
           <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
@@ -804,7 +1367,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Tab 5: Metrics */}
+      {/* Tab 6: Metrics */}
       {activeTab === 'metrics' && (
         <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
           <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📊 Prometheus Exposition Telemetry (/metrics)</h2>
