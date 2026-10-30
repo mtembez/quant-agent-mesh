@@ -242,6 +242,8 @@ async def gold_analyze_endpoint(request: Request):
     boll_window = int(body.get("boll_window", 20))
     boll_std = float(body.get("boll_std", 2.0))
     rsi_period = int(body.get("rsi_period", 14))
+    account_capital = float(body.get("account_capital", 100.0))
+    leverage = float(body.get("leverage", 200.0))
 
     res = gold_analyzer.analyze(
         timeframe=timeframe,
@@ -252,8 +254,35 @@ async def gold_analyze_endpoint(request: Request):
         boll_window=boll_window,
         boll_std=boll_std,
         rsi_period=rsi_period,
+        account_capital=account_capital,
+        leverage=leverage,
     )
     return JSONResponse(res.model_dump(mode="json"))
+
+
+async def gold_account_mode_endpoint(request: Request):
+    """Switch account mode between $100 Micro Survival and Institutional Capital."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    capital = float(body.get("capital", 100.0))
+    leverage = float(body.get("leverage", 200.0))
+    gold_analyzer.demo_trader.set_account_params(capital=capital, leverage=leverage)
+    coordinator.execution_engine.portfolio.cash = capital
+    coordinator.execution_engine.portfolio.initial_capital = capital
+    coordinator.execution_engine.portfolio.equity = capital
+    coordinator.execution_engine.portfolio.total_pnl = 0.0
+    coordinator.execution_engine.portfolio.positions.clear()
+
+    res = gold_analyzer.analyze(account_capital=capital, leverage=leverage)
+    return JSONResponse({
+        "account_capital": capital,
+        "leverage": leverage,
+        "account_mode": "micro_100" if capital <= 500.0 else "institutional",
+        "portfolio": coordinator.execution_engine.portfolio.model_dump(mode="json"),
+        "analysis": res.model_dump(mode="json"),
+    })
 
 
 async def gold_trade_endpoint(request: Request):
@@ -265,10 +294,10 @@ async def gold_trade_endpoint(request: Request):
 
     side_str = body.get("side", "BUY").upper()
     side = OrderSide.BUY if side_str == "BUY" else OrderSide.SELL
-    qty = float(body.get("quantity", 1.0))
+    qty = float(body.get("quantity", 0.01))
     spot_px = float(body.get("market_price", 3984.66))
-    stop_loss = float(body.get("stop_loss", spot_px * 0.98))
-    take_profit = float(body.get("take_profit", spot_px * 1.02))
+    stop_loss = float(body.get("stop_loss", spot_px - 2.0 if side_str == "BUY" else spot_px + 2.0))
+    take_profit = float(body.get("take_profit", spot_px + 5.0 if side_str == "BUY" else spot_px - 5.0))
 
     coordinator.execution_engine.allow_short = True
     order = coordinator.execution_engine.submit_order(
@@ -310,13 +339,15 @@ async def gold_demo_trade_place_endpoint(request: Request):
 
     side = body.get("side", "BUY")
     bar_index = body.get("bar_index", None)
-    qty = float(body.get("quantity", 1.0))
+    qty = float(body.get("quantity", 0.01))
     entry_px = float(body["entry_price"]) if "entry_price" in body else None
     sl = float(body["stop_loss"]) if "stop_loss" in body else None
     tp = float(body["take_profit"]) if "take_profit" in body else None
     timeframe = body.get("timeframe", "1h")
+    capital = float(body.get("account_capital", 100.0))
+    leverage = float(body.get("leverage", 200.0))
 
-    res = gold_analyzer.analyze(timeframe=timeframe)
+    res = gold_analyzer.analyze(timeframe=timeframe, account_capital=capital, leverage=leverage)
     trade = gold_analyzer.demo_trader.place_trade(
         side=side,
         candles=res.candles,
@@ -391,6 +422,7 @@ routes = [
     Route("/api/v1/pairs/analyze", analyze_pairs_endpoint, methods=["POST"]),
     Route("/api/v1/predict/live", live_predict_endpoint, methods=["GET", "POST"]),
     Route("/api/v1/gold/analyze", gold_analyze_endpoint, methods=["GET", "POST"]),
+    Route("/api/v1/gold/account-mode", gold_account_mode_endpoint, methods=["POST"]),
     Route("/api/v1/gold/trade", gold_trade_endpoint, methods=["POST"]),
     Route("/api/v1/gold/demo-trade", gold_demo_trade_place_endpoint, methods=["POST"]),
     Route("/api/v1/gold/demo-trades", gold_demo_trades_get_endpoint, methods=["GET", "DELETE"]),

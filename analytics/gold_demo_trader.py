@@ -47,8 +47,8 @@ class DemoTradeAssessment(BaseModel):
     max_drawdown_dollars: float = 0.0
     max_drawdown_pct: float = 0.0
     average_trade_pnl: float = 0.0
-    initial_demo_capital: float = 100000.0
-    current_equity: float = 100000.0
+    initial_demo_capital: float = 100.0
+    current_equity: float = 100.0
     roi_pct: float = 0.0
     trades: List[GoldDemoTrade] = Field(default_factory=list)
 
@@ -56,9 +56,15 @@ class DemoTradeAssessment(BaseModel):
 class SpotGoldDemoTrader:
     """Manages demo trade entries, lifecycle resolution against historical candles, and performance metrics."""
 
-    def __init__(self, initial_capital: float = 100000.0):
+    def __init__(self, initial_capital: float = 100.0, leverage: float = 200.0):
         self.initial_capital = initial_capital
+        self.leverage = leverage
         self.trades: List[GoldDemoTrade] = []
+
+    def set_account_params(self, capital: float, leverage: float = 200.0):
+        """Update account capital baseline and leverage."""
+        self.initial_capital = capital
+        self.leverage = leverage
 
     def clear(self):
         """Reset all demo trades."""
@@ -86,11 +92,18 @@ class SpotGoldDemoTrader:
         entry_px = custom_entry_price if custom_entry_price is not None else candle.close
         side_norm = side.upper()
 
-        # Sensible dynamic defaults for SL/TP if not provided (~1.5% and 3.0%)
-        if stop_loss is None:
-            stop_loss = round(entry_px * 0.985 if side_norm == "BUY" else entry_px * 1.015, 2)
-        if take_profit is None:
-            take_profit = round(entry_px * 1.03 if side_norm == "BUY" else entry_px * 0.97, 2)
+        # Sensible dynamic defaults for SL/TP calibrated to account size
+        if self.initial_capital <= 500.0:
+            # $100 Micro Account: $2.00 stop distance ($2.00 max risk for 0.01 lot) and $5.00 target
+            if stop_loss is None:
+                stop_loss = round(entry_px - 2.0 if side_norm == "BUY" else entry_px + 2.0, 2)
+            if take_profit is None:
+                take_profit = round(entry_px + 5.0 if side_norm == "BUY" else entry_px - 5.0, 2)
+        else:
+            if stop_loss is None:
+                stop_loss = round(entry_px * 0.985 if side_norm == "BUY" else entry_px * 1.015, 2)
+            if take_profit is None:
+                take_profit = round(entry_px * 1.03 if side_norm == "BUY" else entry_px * 0.97, 2)
 
         trade = GoldDemoTrade(
             trade_id=f"xau-{uuid.uuid4().hex[:6]}",

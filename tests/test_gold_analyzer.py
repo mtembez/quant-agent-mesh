@@ -205,3 +205,31 @@ def test_spot_gold_demo_trader_and_endpoints():
         assert res_close.status_code == 200
         d_close = res_close.json()
         assert d_close["trade"]["status"] in ["CLOSED_PROFIT", "CLOSED_LOSS"]
+
+
+def test_spot_gold_micro_account_100_management():
+    """Verify $100 Micro-Account sizing, margin allocation, risk capping, and account mode switching."""
+    analyzer = SpotGoldAnalyzer()
+    res = analyzer.analyze(
+        account_capital=100.0,
+        leverage=200.0,
+        custom_spot_price=3984.66,
+    )
+    assert res.account_capital == 100.0
+    assert res.account_mode == "micro_100"
+    assert res.leverage == 200.0
+    assert res.recommended_lot_size == 0.01  # Must enforce 0.01 micro-lot sizing for small accounts
+    assert res.max_risk_dollars == 2.00     # 2.0% risk cap ($2.00)
+    assert res.margin_required <= 25.0      # Margin on 0.01 lot at 1:200 is ~$19.92
+    assert res.free_margin >= 75.0          # Buffer remains > 75%
+    assert res.margin_level_pct >= 400.0    # Margin level safely above 200%
+    assert res.liquidation_price_distance >= 70.0  # Survives $70+ market swings
+
+    # Test API account mode switch endpoint
+    client = TestClient(app)
+    res_mode = client.post("/api/v1/gold/account-mode", json={"capital": 100.0, "leverage": 200.0, "mode": "micro_100"})
+    assert res_mode.status_code == 200
+    d_mode = res_mode.json()
+    assert d_mode["account_capital"] == 100.0
+    assert d_mode["portfolio"]["cash"] == 100.0
+    assert d_mode["portfolio"]["equity"] == 100.0

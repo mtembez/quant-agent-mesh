@@ -106,6 +106,16 @@ class SpotGoldAnalysisResponse(BaseModel):
     ml_driving_features: List[str] = Field(default_factory=list)
     # Demo Trades Assessment Telemetry
     demo_assessment: Optional[Dict[str, Any]] = None
+    # Micro-Account ($100 Account) Risk & Margin Telemetry
+    account_capital: float = 100.0
+    account_mode: str = "micro_100"
+    leverage: float = 200.0
+    margin_required: float = 19.92
+    free_margin: float = 80.08
+    margin_level_pct: float = 502.0
+    max_risk_dollars: float = 2.00
+    liquidation_price_distance: float = 80.08
+    pip_value_dollars: float = 1.00
 
 
 
@@ -320,6 +330,8 @@ class SpotGoldAnalyzer:
         boll_window: int = 20,
         boll_std: float = 2.0,
         rsi_period: int = 14,
+        account_capital: float = 100.0,
+        leverage: float = 200.0,
     ) -> SpotGoldAnalysisResponse:
         """
         Execute full Spot Gold analytics, refined strategy formulation, and online ML forecasting.
@@ -532,24 +544,48 @@ class SpotGoldAnalyzer:
             ),
         }
 
-        # Dynamic Fractional Kelly Position Sizing and Dynamic Risk Bands
+        # Dynamic Fractional Kelly Position Sizing for Account Capital & Leverage
         active_metric = strategy_registry.get(active_strategy, strategy_registry["ema"])
         p_win = max(0.40, min(0.85, active_metric.win_rate_pct / 100.0))
-        b_payoff = 1.5
-        kelly_fraction = max(0.02, min(0.20, (p_win * (b_payoff + 1.0) - 1.0) / b_payoff))
-        half_kelly = 0.5 * kelly_fraction
-        rec_lot_size = round(max(0.1, min(10.0, (100000.0 * half_kelly) / (current_spot * 0.05))), 2)
+        b_payoff = 2.0  # Asymmetric 1:2.0 to 1:2.5 RR
+        kelly_fraction = max(0.01, min(0.15, (p_win * (b_payoff + 1.0) - 1.0) / b_payoff))
+        quarter_kelly = 0.25 * kelly_fraction
 
-        risk_delta = current_spot * (max(0.08, rogers_satchell_vol) / math.sqrt(252.0 * 23.0)) * 2.5
+        margin_per_unit = current_spot / max(1.0, leverage)
+        is_micro = account_capital <= 500.0
+
+        if is_micro:
+            # $100 Micro-Account Survival & Growth Mode
+            # Enforce 0.01 micro-lot (1 oz) minimum discrete execution
+            rec_lot_size = 0.01
+            max_risk_dollars = round(account_capital * 0.02, 2)  # 2.0% ($2.00 max risk)
+            # Risk delta: $2.00 stop loss distance (1 oz * $2 = $2.00 max loss)
+            risk_delta = 2.00
+            take_delta = 5.00  # 1:2.5 Risk/Reward (+$5.00 profit target)
+        else:
+            # Institutional Mode ($10,000 to $100,000+)
+            max_risk_dollars = round(account_capital * 0.02, 2)
+            raw_lots = (account_capital * quarter_kelly) / max(1.0, margin_per_unit)
+            rec_lot_size = round(max(0.01, min(50.0, raw_lots)), 2)
+            risk_delta = round(current_spot * (max(0.08, rogers_satchell_vol) / math.sqrt(252.0 * 23.0)) * 2.5, 2)
+            take_delta = round(2.0 * risk_delta, 2)
+
+        # Standard contract size: 1.0 lot = 100 troy ounces. 0.01 lot = 1.0 troy ounce.
+        contract_ounces = rec_lot_size * 100.0
+        margin_req = round((contract_ounces * current_spot) / max(1.0, leverage), 2)
+        free_marg = round(max(0.0, account_capital - margin_req), 2)
+        marg_level = round((account_capital / max(1e-9, margin_req)) * 100.0, 1)
+        liq_distance = round(free_marg / max(0.1, contract_ounces), 2)
+
         if active_metric.current_signal == "BUY":
             trailing_stop = round(current_spot - risk_delta, 2)
-            take_profit = round(current_spot + 2.0 * risk_delta, 2)
+            take_profit = round(current_spot + take_delta, 2)
         elif active_metric.current_signal == "SELL":
             trailing_stop = round(current_spot + risk_delta, 2)
-            take_profit = round(current_spot - 2.0 * risk_delta, 2)
+            take_profit = round(current_spot - take_delta, 2)
         else:
             trailing_stop = round(current_spot - risk_delta, 2)
-            take_profit = round(current_spot + risk_delta, 2)
+            take_profit = round(current_spot + take_delta, 2)
 
         # Build Candles with Overlays
         candle_objs: List[GoldCandle] = []
@@ -674,5 +710,14 @@ class SpotGoldAnalyzer:
             ml_consensus_signal=ml_consensus,
             ml_driving_features=ml_attributions,
             demo_assessment=demo_eval,
+            account_capital=account_capital,
+            account_mode="micro_100" if is_micro else "institutional",
+            leverage=leverage,
+            margin_required=margin_req,
+            free_margin=free_marg,
+            margin_level_pct=marg_level,
+            max_risk_dollars=max_risk_dollars,
+            liquidation_price_distance=liq_distance,
+            pip_value_dollars=round(rec_lot_size * 100.0 * 0.01, 2),
         )
 

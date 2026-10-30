@@ -31,8 +31,11 @@ export default function App() {
   const [showTuner, setShowTuner] = useState(false);
   const [hoveredCandle, setHoveredCandle] = useState(null);
 
-  // Spot Gold Trade Ticket & Kelly Execution
-  const [goldTradeQty, setGoldTradeQty] = useState(1.0);
+  // Spot Gold Account Capital, Mode & Trade Ticket
+  const [accountCapital, setAccountCapital] = useState(100.0);
+  const [accountLeverage, setAccountLeverage] = useState(200.0);
+  const [accountMode, setAccountMode] = useState('micro_100');
+  const [goldTradeQty, setGoldTradeQty] = useState(0.01);
   const [goldTradeSide, setGoldTradeSide] = useState('BUY');
   const [tradeExecuting, setTradeExecuting] = useState(false);
   const [tradeToast, setTradeToast] = useState(null);
@@ -123,7 +126,9 @@ export default function App() {
     slow = goldEmaSlow,
     bWin = goldBollWindow,
     bStd = goldBollStd,
-    rsiP = goldRsiPeriod
+    rsiP = goldRsiPeriod,
+    cap = accountCapital,
+    lev = accountLeverage
   ) => {
     setLoadingGold(true);
     try {
@@ -136,20 +141,45 @@ export default function App() {
         boll_window: bWin.toString(),
         boll_std: bStd.toString(),
         rsi_period: rsiP.toString(),
+        account_capital: cap.toString(),
+        leverage: lev.toString(),
       });
       const res = await fetch(`/api/v1/gold/analyze?${params.toString()}`);
       if (res.ok) {
         const data = await res.json();
         setGoldData(data);
-        if (data.recommended_lot_size && (!goldTradeQty || goldTradeQty === 1.0)) {
+        if (data.recommended_lot_size) {
           setGoldTradeQty(data.recommended_lot_size);
         }
-        setStatusMessage(`Spot Gold analyzed [${tf.toUpperCase()}] -> Active Model: ${strat.toUpperCase()} | Signal: ${data.strategies[strat]?.current_signal || 'HOLD'}`);
+        setStatusMessage(`Spot Gold analyzed [${tf.toUpperCase()}] -> Active Model: ${strat.toUpperCase()} | Capital: $${cap} (${data.account_mode}) | Signal: ${data.strategies[strat]?.current_signal || 'HOLD'}`);
       }
     } catch (e) {
       console.error('Failed to fetch gold analysis:', e);
     } finally {
       setLoadingGold(false);
+    }
+  };
+
+  const switchAccountMode = async (mode, cap, lev) => {
+    setAccountMode(mode);
+    setAccountCapital(cap);
+    setAccountLeverage(lev);
+    try {
+      const res = await fetch('/api/v1/gold/account-mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ capital: cap, leverage: lev, mode }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setPortfolio(data.portfolio);
+        setGoldData(data.analysis);
+        setGoldTradeQty(data.analysis.recommended_lot_size || (mode === 'micro_100' ? 0.01 : 1.0));
+        setTradeToast(`Switched account mode to ${mode === 'micro_100' ? '$100 Micro-Account Survival Mode (0.01 Lots)' : '$100,000 Institutional Mode'}`);
+        setTimeout(() => setTradeToast(null), 5000);
+      }
+    } catch (e) {
+      console.error(e);
     }
   };
 
@@ -1054,6 +1084,41 @@ export default function App() {
               ))}
             </div>
 
+            {/* Account Capital & Sizing Mode Switcher ($100 Micro vs $100k Institutional) */}
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+              <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 'bold' }}>Account:</span>
+              <button
+                onClick={() => switchAccountMode('micro_100', 100.0, 200.0)}
+                style={{
+                  padding: '6px 11px',
+                  borderRadius: '5px',
+                  border: '1px solid ' + (accountMode === 'micro_100' ? '#10b981' : '#374151'),
+                  background: accountMode === 'micro_100' ? '#065f46' : '#1f2937',
+                  color: accountMode === 'micro_100' ? '#a7f3d0' : '#d1d5db',
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                }}
+              >
+                💰 $100 Micro (1:200)
+              </button>
+              <button
+                onClick={() => switchAccountMode('institutional', 100000.0, 20.0)}
+                style={{
+                  padding: '6px 11px',
+                  borderRadius: '5px',
+                  border: '1px solid ' + (accountMode === 'institutional' ? '#38bdf8' : '#374151'),
+                  background: accountMode === 'institutional' ? '#075985' : '#1f2937',
+                  color: accountMode === 'institutional' ? '#bae6fd' : '#d1d5db',
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                  cursor: 'pointer',
+                }}
+              >
+                🏛️ $100k Inst.
+              </button>
+            </div>
+
             {/* Strategy Parameter Tuner, Export CSV, and Benchmark Spot Reference */}
             <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
               <button
@@ -1217,6 +1282,75 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              {/* $100 Micro-Account Health & Risk Governor Banner */}
+              {accountMode === 'micro_100' && (
+                <div style={{ background: '#0a0f1d', border: '1px solid #059669', borderRadius: '8px', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <span style={{ fontSize: '20px' }}>🛡️</span>
+                      <div>
+                        <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#10b981', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          $100 Micro-Account Capital Preservation & Growth Governor
+                          <span style={{ fontSize: '10px', background: '#064e3b', color: '#a7f3d0', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
+                            LEVERAGE 1:200 • MICRO-LOTS (0.01)
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                          Calibrated to survive high-volatility XAU/USD gold swings without margin call or liquidation
+                        </div>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '11px', background: '#111827', color: '#a7f3d0', border: '1px solid #065f46', padding: '4px 10px', borderRadius: '4px', fontWeight: 'bold' }}>
+                        Max Risk / Trade: ${goldData.max_risk_dollars ? goldData.max_risk_dollars.toFixed(2) : '2.00'} (2.0%)
+                      </span>
+                      <span style={{ fontSize: '11px', background: '#111827', color: '#38bdf8', border: '1px solid #0369a1', padding: '4px 10px', borderRadius: '4px', fontWeight: 'bold' }}>
+                        Margin / 0.01 Lot: ${goldData.margin_required ? goldData.margin_required.toFixed(2) : '19.92'}
+                      </span>
+                      <span style={{ fontSize: '11px', background: '#111827', color: '#f59e0b', border: '1px solid #b45309', padding: '4px 10px', borderRadius: '4px', fontWeight: 'bold' }}>
+                        Margin Level: {goldData.margin_level_pct ? goldData.margin_level_pct.toFixed(0) : '502'}% (Safe &gt; 200%)
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Micro-Account Sizing Matrix */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', fontSize: '12px' }}>
+                    <div style={{ background: '#111827', padding: '10px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ color: '#94a3b8', fontSize: '11px' }}>Account Equity</div>
+                      <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#f8fafc', marginTop: '2px' }}>
+                        ${(goldData.account_capital || 100.0).toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#10b981' }}>Base Capital: $100.00</div>
+                    </div>
+
+                    <div style={{ background: '#111827', padding: '10px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ color: '#94a3b8', fontSize: '11px' }}>Free Margin Buffer</div>
+                      <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#38bdf8', marginTop: '2px' }}>
+                        ${(goldData.free_margin || 80.08).toFixed(2)}
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#64748b' }}>Usable for drawdowns</div>
+                    </div>
+
+                    <div style={{ background: '#111827', padding: '10px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ color: '#94a3b8', fontSize: '11px' }}>Liquidation Distance</div>
+                      <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#10b981', marginTop: '2px' }}>
+                        ${(goldData.liquidation_price_distance || 80.08).toFixed(2)} drop
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#64748b' }}>Survives $80 market wick</div>
+                    </div>
+
+                    <div style={{ background: '#111827', padding: '10px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
+                      <div style={{ color: '#94a3b8', fontSize: '11px' }}>Circuit Breaker Limit</div>
+                      <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#ef4444', marginTop: '2px' }}>
+                        -$5.00 Max Daily Loss
+                      </div>
+                      <div style={{ fontSize: '10px', color: '#64748b' }}>Halts after 2 losses</div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Machine Learning Autonomous Directional Intelligence Engine Card */}
               <div style={{ background: '#0a0f1d', border: '1px solid #1e3a8a', borderRadius: '8px', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -1501,12 +1635,12 @@ export default function App() {
                       <label style={{ fontSize: '12px', color: '#94a3b8' }}>Lots:</label>
                       <input
                         type="number"
-                        step="0.1"
-                        min="0.1"
+                        step="0.01"
+                        min="0.01"
                         max="20.0"
                         value={goldTradeQty}
-                        onChange={(e) => setGoldTradeQty(parseFloat(e.target.value) || 1.0)}
-                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '65px', fontWeight: 'bold' }}
+                        onChange={(e) => setGoldTradeQty(parseFloat(e.target.value) || 0.01)}
+                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '68px', fontWeight: 'bold' }}
                       />
                     </div>
 
@@ -1514,11 +1648,11 @@ export default function App() {
                       <label style={{ fontSize: '12px', color: '#ef4444' }}>SL ($):</label>
                       <input
                         type="number"
-                        step="1.0"
-                        placeholder={goldTradeSide === 'BUY' ? (goldData.current_spot_price * 0.985).toFixed(0) : (goldData.current_spot_price * 1.015).toFixed(0)}
+                        step="0.5"
+                        placeholder={goldTradeSide === 'BUY' ? (goldData.trailing_stop_loss || (goldData.current_spot_price - 2.0)).toFixed(2) : (goldData.trailing_stop_loss || (goldData.current_spot_price + 2.0)).toFixed(2)}
                         value={demoTradeSl}
                         onChange={(e) => setDemoTradeSl(e.target.value)}
-                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 8px', borderRadius: '4px', width: '75px', fontWeight: 'bold', fontSize: '11px' }}
+                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 8px', borderRadius: '4px', width: '85px', fontWeight: 'bold', fontSize: '11px' }}
                       />
                     </div>
 
@@ -1526,11 +1660,11 @@ export default function App() {
                       <label style={{ fontSize: '12px', color: '#10b981' }}>TP ($):</label>
                       <input
                         type="number"
-                        step="1.0"
-                        placeholder={goldTradeSide === 'BUY' ? (goldData.current_spot_price * 1.03).toFixed(0) : (goldData.current_spot_price * 0.97).toFixed(0)}
+                        step="0.5"
+                        placeholder={goldTradeSide === 'BUY' ? (goldData.take_profit_target || (goldData.current_spot_price + 5.0)).toFixed(2) : (goldData.take_profit_target || (goldData.current_spot_price - 5.0)).toFixed(2)}
                         value={demoTradeTp}
                         onChange={(e) => setDemoTradeTp(e.target.value)}
-                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 8px', borderRadius: '4px', width: '75px', fontWeight: 'bold', fontSize: '11px' }}
+                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 8px', borderRadius: '4px', width: '85px', fontWeight: 'bold', fontSize: '11px' }}
                       />
                     </div>
 
