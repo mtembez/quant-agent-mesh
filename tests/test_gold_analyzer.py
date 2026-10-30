@@ -76,13 +76,16 @@ def test_spot_gold_analyzer_strategy_overlays():
         assert len(res.forward_trajectory) == 8
 
         # Check Machine Learning Engine Telemetry
-        assert res.ml_model_name == "Online Adaptive RLS + Bayesian Probability Engine"
+        assert "Stacking Meta-Ensemble" in res.ml_model_name or "Online Adaptive" in res.ml_model_name
         assert 0.0 <= res.ml_prediction_prob_up <= 100.0
         assert 0.0 <= res.ml_prediction_prob_down <= 100.0
         assert abs((res.ml_prediction_prob_up + res.ml_prediction_prob_down) - 100.0) < 0.2
         assert res.ml_consensus_signal in ["BUY", "SELL", "HOLD"]
         assert 0.0 <= res.ml_confidence_score <= 100.0
         assert len(res.ml_driving_features) > 0
+        assert res.ml_model_breakdown is not None
+        assert "gbdt_gb_prob" in res.ml_model_breakdown
+        assert "mlp_neural_prob" in res.ml_model_breakdown
 
 
 def test_api_gold_analyze_endpoint():

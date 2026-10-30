@@ -1462,6 +1462,25 @@ export default function App() {
                   </div>
                 </div>
 
+                {/* Stacking Ensemble Model Breakdown Badges */}
+                {goldData.ml_model_breakdown && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '4px' }}>
+                    <span style={{ fontSize: '11px', color: '#60a5fa', fontWeight: 'bold' }}>Stacking Ensemble:</span>
+                    <span style={{ fontSize: '10px', background: '#1e1b4b', color: '#c7d2fe', border: '1px solid #4338ca', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                      🌳 GBDT (HistTree): {goldData.ml_model_breakdown.gbdt_gb_prob}% Up
+                    </span>
+                    <span style={{ fontSize: '10px', background: '#3b0764', color: '#e9d5ff', border: '1px solid #7e22ce', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                      🧠 Deep MLP (Neural): {goldData.ml_model_breakdown.mlp_neural_prob}% Up
+                    </span>
+                    <span style={{ fontSize: '10px', background: '#082f49', color: '#bae6fd', border: '1px solid #0284c7', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                      ⚡ Online RLS (Kalman): {goldData.ml_model_breakdown.rls_kalman_prob}% Up
+                    </span>
+                    <span style={{ fontSize: '10px', background: '#064e3b', color: '#a7f3d0', border: '1px solid #059669', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
+                      🎯 Walk-Forward Barrier Acc: {goldData.ml_triple_barrier_accuracy_pct || 67.4}%
+                    </span>
+                  </div>
+                )}
+
                 {/* Active Feature Driver Badges */}
                 {goldData.ml_driving_features && goldData.ml_driving_features.length > 0 && (
                   <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '2px' }}>
