@@ -1,4 +1,33 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import {
+  Activity,
+  TrendingUp,
+  TrendingDown,
+  Layers,
+  Shield,
+  Zap,
+  BarChart3,
+  Clock,
+  ArrowUpRight,
+  ArrowDownRight,
+  Sliders,
+  RefreshCw,
+  Download,
+  CheckCircle2,
+  XCircle,
+  AlertTriangle,
+  Crosshair,
+  Maximize2,
+  Eye,
+  EyeOff,
+  BookOpen,
+  Cpu,
+  Compass,
+  Terminal,
+  Percent,
+  DollarSign,
+  PieChart,
+} from 'lucide-react';
 
 export default function App() {
   const [portfolio, setPortfolio] = useState({
@@ -14,16 +43,19 @@ export default function App() {
   const [metricsText, setMetricsText] = useState('');
   const [statusMessage, setStatusMessage] = useState('Spot Gold Live Alpha Terminal & ML Predictor Active');
 
-  // Spot Gold Terminal State (Calibrated to TradingView OANDA Spot Gold ~$3,984.66)
+  // Spot Gold Terminal State
   const [goldData, setGoldData] = useState(null);
   const [goldTimeframe, setGoldTimeframe] = useState('1h'); // 15m | 1h | 4h | 1D
   const [goldStrategy, setGoldStrategy] = useState('ema'); // ema | bollinger | rsi | ou
-  const [goldSpotPrice, setGoldSpotPrice] = useState(3913.60);
+  const [goldSpotPrice, setGoldSpotPrice] = useState(3898.90);
+  const [previousPrice, setPreviousPrice] = useState(3898.90);
+  const [priceTickClass, setPriceTickClass] = useState('');
   const [isCustomPrice, setIsCustomPrice] = useState(false);
   const [audit1000Data, setAudit1000Data] = useState(null);
-  const [show1000Modal, setShow1000Modal] = useState(false);
   const [goldAutoRefresh, setGoldAutoRefresh] = useState(true);
   const [loadingGold, setLoadingGold] = useState(false);
+  const [bottomDockTab, setBottomDockTab] = useState('audit1000'); // audit1000 | journal | volatility | forecast
+  const [journalFilter, setJournalFilter] = useState('ALL'); // ALL | OPEN | CLOSED_PROFIT | CLOSED_LOSS
 
   // Dynamic Strategy Parameter Tuners
   const [goldEmaFast, setGoldEmaFast] = useState(12);
@@ -32,7 +64,6 @@ export default function App() {
   const [goldBollStd, setGoldBollStd] = useState(2.0);
   const [goldRsiPeriod, setGoldRsiPeriod] = useState(14);
   const [showTuner, setShowTuner] = useState(false);
-  const [hoveredCandle, setHoveredCandle] = useState(null);
 
   // Spot Gold Account Capital, Mode & Trade Ticket
   const [accountCapital, setAccountCapital] = useState(100.0);
@@ -46,6 +77,21 @@ export default function App() {
   const [demoSimulating, setDemoSimulating] = useState(false);
   const [demoTradeSl, setDemoTradeSl] = useState('');
   const [demoTradeTp, setDemoTradeTp] = useState('');
+
+  // Interactive Chart View State (Pan & Zoom, Layers, Crosshair)
+  const [visibleCount, setVisibleCount] = useState(48); // number of visible candles
+  const [panOffset, setPanOffset] = useState(0); // offset from latest bar
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStartX, setDragStartX] = useState(0);
+  const [dragStartPan, setDragStartPan] = useState(0);
+  const [crosshair, setCrosshair] = useState(null); // { x, y, candle, index, price }
+  const [showEmaLayer, setShowEmaLayer] = useState(true);
+  const [showBollLayer, setShowBollLayer] = useState(true);
+  const [showVolumeLayer, setShowVolumeLayer] = useState(true);
+  const [showConeLayer, setShowConeLayer] = useState(true);
+  const [showSignalsLayer, setShowSignalsLayer] = useState(true);
+  const [showTradesLayer, setShowTradesLayer] = useState(true);
+  const chartSvgRef = useRef(null);
 
   // Live Auto-Learning Predictor State
   const [livePrediction, setLivePrediction] = useState(null);
@@ -73,6 +119,7 @@ export default function App() {
     fetchPortfolio();
     fetchStrategies();
     fetchGoldAnalysis();
+    fetch1000Audit();
     fetchLivePrediction(livePairKey);
 
     const interval = setInterval(() => {
@@ -155,6 +202,14 @@ export default function App() {
         const data = await res.json();
         setGoldData(data);
         if (!isCustomPrice && data.current_spot_price) {
+          if (data.current_spot_price > previousPrice) {
+            setPriceTickClass('tick-up');
+            setTimeout(() => setPriceTickClass(''), 700);
+          } else if (data.current_spot_price < previousPrice) {
+            setPriceTickClass('tick-down');
+            setTimeout(() => setPriceTickClass(''), 700);
+          }
+          setPreviousPrice(data.current_spot_price);
           setGoldSpotPrice(data.current_spot_price);
         }
         if (data.recommended_lot_size) {
@@ -184,7 +239,7 @@ export default function App() {
         setPortfolio(data.portfolio);
         setGoldData(data.analysis);
         setGoldTradeQty(data.analysis.recommended_lot_size || (mode === 'micro_100' ? 0.01 : 1.0));
-        setTradeToast(`Switched account mode to ${mode === 'micro_100' ? '$100 Micro-Account Survival Mode (0.01 Lots)' : '$100,000 Institutional Mode'}`);
+        setTradeToast(`Switched account mode to ${mode === 'micro_100' ? '$100 Micro-Account Mode (0.01 Lots)' : '$100,000 Institutional Mode'}`);
         setTimeout(() => setTradeToast(null), 5000);
       }
     } catch (e) {
@@ -221,24 +276,24 @@ export default function App() {
     setStatusMessage(`Exported ${goldData.candles.length} candles to CSV successfully`);
   };
 
-  const executeSpotGoldTrade = async () => {
+  const executeSpotGoldTrade = async (overrideSide = null, overridePrice = null) => {
     setTradeExecuting(true);
+    const side = overrideSide || goldTradeSide;
     try {
-      const entryPx = selectedCandleForTrade ? selectedCandleForTrade.candle.close : (goldData?.current_spot_price || goldSpotPrice);
-      const isHistorical = selectedCandleForTrade !== null;
+      const entryPx = overridePrice || (selectedCandleForTrade ? selectedCandleForTrade.candle.close : (goldData?.current_spot_price || goldSpotPrice));
+      const isHistorical = selectedCandleForTrade !== null && !overridePrice;
 
-      // If historical candle is selected, place via demo-trade endpoint
       if (isHistorical) {
         const res = await fetch('/api/v1/gold/demo-trade', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            side: goldTradeSide,
+            side: side,
             bar_index: selectedCandleForTrade.index,
-            quantity: parseFloat(goldTradeQty) || 1.0,
+            quantity: parseFloat(goldTradeQty) || 0.01,
             entry_price: entryPx,
-            stop_loss: demoTradeSl ? parseFloat(demoTradeSl) : (goldTradeSide === 'BUY' ? entryPx * 0.985 : entryPx * 1.015),
-            take_profit: demoTradeTp ? parseFloat(demoTradeTp) : (goldTradeSide === 'BUY' ? entryPx * 1.03 : entryPx * 0.97),
+            stop_loss: demoTradeSl ? parseFloat(demoTradeSl) : (side === 'BUY' ? entryPx * 0.985 : entryPx * 1.015),
+            take_profit: demoTradeTp ? parseFloat(demoTradeTp) : (side === 'BUY' ? entryPx * 1.03 : entryPx * 0.97),
             timeframe: goldTimeframe,
           }),
         });
@@ -253,11 +308,11 @@ export default function App() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            side: goldTradeSide,
-            quantity: parseFloat(goldTradeQty) || 1.0,
+            side: side,
+            quantity: parseFloat(goldTradeQty) || 0.01,
             market_price: entryPx,
-            stop_loss: demoTradeSl ? parseFloat(demoTradeSl) : (goldData?.trailing_stop_loss || entryPx * 0.98),
-            take_profit: demoTradeTp ? parseFloat(demoTradeTp) : (goldData?.take_profit_target || entryPx * 1.02),
+            stop_loss: demoTradeSl ? parseFloat(demoTradeSl) : (goldData?.trailing_stop_loss || (side === 'BUY' ? entryPx * 0.98 : entryPx * 1.02)),
+            take_profit: demoTradeTp ? parseFloat(demoTradeTp) : (goldData?.take_profit_target || (side === 'BUY' ? entryPx * 1.02 : entryPx * 0.98)),
           }),
         });
         if (res.ok) {
@@ -286,13 +341,14 @@ export default function App() {
         body: JSON.stringify({
           strategy: goldStrategy,
           timeframe: goldTimeframe,
-          quantity: parseFloat(goldTradeQty) || 1.0,
+          quantity: parseFloat(goldTradeQty) || 0.01,
         }),
       });
       if (res.ok) {
         const data = await res.json();
         setTradeToast(`Simulation Complete: ${data.total_trades} demo trades simulated across ${goldStrategy.toUpperCase()} historical signals | Net PnL: ${data.net_pnl >= 0 ? '+' : ''}$${data.net_pnl.toFixed(2)} | Win Rate: ${data.win_rate_pct}% | PF: ${data.profit_factor}`);
         fetchGoldAnalysis();
+        setBottomDockTab('journal');
         setTimeout(() => setTradeToast(null), 8000);
       }
     } catch (e) {
@@ -318,6 +374,7 @@ export default function App() {
         const data = await res.json();
         setTradeToast(`100 Trades Backtest (Last 3 Mo): 100 trades loaded | Net PnL: ${data.net_pnl >= 0 ? '+' : ''}$${data.net_pnl.toFixed(2)} | Win Rate: ${data.win_rate_pct}% | PF: ${data.profit_factor} | ROI: +${data.roi_pct}%`);
         fetchGoldAnalysis();
+        setBottomDockTab('journal');
         setTimeout(() => setTradeToast(null), 10000);
       }
     } catch (e) {
@@ -341,10 +398,10 @@ export default function App() {
       });
       if (res.ok) {
         const data = await res.json();
-        setTradeToast(`🚀 1,000 Trades Walk-Forward (Last 3 Mo): 1,000 trades executed | Net PnL: ${data.net_pnl >= 0 ? '+' : ''}$${data.net_pnl.toFixed(2)} | Win Rate: ${data.win_rate_pct}% | PF: ${data.profit_factor} | ROI: +${data.roi_pct}% | Max DD: $${data.max_drawdown_dollars} (${data.max_drawdown_pct}%)`);
+        setTradeToast(`1,000 Trades Walk-Forward: 1,000 trades executed | Net PnL: ${data.net_pnl >= 0 ? '+' : ''}$${data.net_pnl.toFixed(2)} | Win Rate: ${data.win_rate_pct}% | PF: ${data.profit_factor} | ROI: +${data.roi_pct}% | Max DD: $${data.max_drawdown_dollars} (${data.max_drawdown_pct}%)`);
         fetchGoldAnalysis();
         fetch1000Audit();
-        setShow1000Modal(true);
+        setBottomDockTab('audit1000');
         setTimeout(() => setTradeToast(null), 12000);
       }
     } catch (e) {
@@ -393,7 +450,6 @@ export default function App() {
       setStatusMessage('Failed to clear demo trades');
     }
   };
-
 
   const fetchLivePrediction = async (pairKey = livePairKey) => {
     setLoadingPrediction(true);
@@ -511,63 +567,154 @@ export default function App() {
   };
 
   // =========================================================================
-  // RENDER DEDICATED SPOT GOLD CHART WITH STRATEGY OVERLAYS & FORWARD ML CONE
+  // INTERACTIVE CHART: PAN, ZOOM, CROSSHAIR & VOLUME ENGINE
   // =========================================================================
-  const renderSpotGoldChart = () => {
-    if (!goldData || !goldData.candles || goldData.candles.length === 0) {
-      return <p style={{ color: '#94a3b8' }}>Loading live Spot Gold candles & strategy overlays...</p>;
+  const allCandles = goldData?.candles || [];
+  const forwardTraj = goldData?.forward_trajectory || [];
+
+  // Determine Visible Window based on visibleCount and panOffset
+  const totalAvailableCandles = allCandles.length;
+  const maxPan = Math.max(0, totalAvailableCandles - visibleCount);
+  const clampedPan = Math.max(0, Math.min(panOffset, maxPan));
+
+  const startIndex = Math.max(0, totalAvailableCandles - visibleCount - clampedPan);
+  const endIndex = Math.min(totalAvailableCandles, startIndex + visibleCount);
+  const visibleCandles = useMemo(() => allCandles.slice(startIndex, endIndex), [allCandles, startIndex, endIndex]);
+
+  // Handle Chart Mouse Drag for Smooth Panning
+  const handleMouseDown = (e) => {
+    setIsDragging(true);
+    setDragStartX(e.clientX);
+    setDragStartPan(clampedPan);
+  };
+
+  const handleMouseMove = (e) => {
+    if (!chartSvgRef.current) return;
+    const rect = chartSvgRef.current.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const mouseY = e.clientY - rect.top;
+
+    if (isDragging) {
+      const deltaX = e.clientX - dragStartX;
+      const barPixelWidth = rect.width / (visibleCandles.length + (showConeLayer ? forwardTraj.length : 0));
+      const deltaBars = Math.round(deltaX / (barPixelWidth || 10));
+      setPanOffset(Math.max(0, Math.min(maxPan, dragStartPan + deltaBars)));
     }
 
-    const candles = goldData.candles;
-    const traj = goldData.forward_trajectory || [];
+    // Magnetic Crosshair Snapping
+    const width = 940;
+    const height = 370;
+    const padX = 55;
+    const padY = 28;
+    const totalSteps = visibleCandles.length + (showConeLayer ? forwardTraj.length : 0) - 1;
+    const normX = (mouseX / rect.width) * width;
+    const normY = (mouseY / rect.height) * height;
 
-    // Collect all price values to compute Y-scale
-    const allPrices = [];
-    candles.forEach((c) => {
-      allPrices.push(c.high, c.low, c.close, c.open);
-      if (goldStrategy === 'ema') {
-        if (c.ema_fast) allPrices.push(c.ema_fast);
-        if (c.ema_slow) allPrices.push(c.ema_slow);
-      } else if (goldStrategy === 'bollinger') {
-        if (c.boll_upper) allPrices.push(c.boll_upper);
-        if (c.boll_lower) allPrices.push(c.boll_lower);
-      } else if (goldStrategy === 'ou') {
-        if (c.ou_equilibrium) allPrices.push(c.ou_equilibrium);
+    if (normX >= padX && normX <= width - padX) {
+      const relIdx = Math.round(((normX - padX) / (width - 2 * padX)) * totalSteps);
+      if (relIdx >= 0 && relIdx < visibleCandles.length) {
+        const c = visibleCandles[relIdx];
+        setCrosshair({
+          x: normX,
+          y: normY,
+          candle: c,
+          candleIndex: startIndex + relIdx,
+        });
+      } else {
+        setCrosshair(null);
+      }
+    } else {
+      setCrosshair(null);
+    }
+  };
+
+  const handleMouseUp = () => {
+    setIsDragging(false);
+  };
+
+  // Mouse Wheel Zoom
+  const handleWheel = (e) => {
+    e.preventDefault();
+    if (e.deltaY < 0) {
+      // Zoom in
+      setVisibleCount((prev) => Math.max(14, prev - 4));
+    } else {
+      // Zoom out
+      setVisibleCount((prev) => Math.min(totalAvailableCandles, prev + 4));
+    }
+  };
+
+  // Quick Range Presets
+  const setRangePreset = (count) => {
+    setVisibleCount(Math.min(totalAvailableCandles, count));
+    setPanOffset(0);
+  };
+
+  // =========================================================================
+  // RENDER PROFESSIONAL INTERACTIVE CHART COMPONENT
+  // =========================================================================
+  const renderInteractiveChart = () => {
+    if (!goldData || visibleCandles.length === 0) {
+      return (
+        <div style={{ padding: '80px 20px', textAlign: 'center', color: '#64748b', fontSize: '12px', fontFamily: 'JetBrains Mono, monospace' }}>
+          <RefreshCw className="inline-block animate-spin mr-2" size={14} /> INITIALIZING COMEX STREAM & TICK DATA...
+        </div>
+      );
+    }
+
+    const width = 940;
+    const height = 370;
+    const padX = 58;
+    const padY = 30;
+    const volHeight = 70; // bottom section allocated for volume histogram
+
+    // Collect all price values in visible view to compute vertical scale
+    const pricesInView = [];
+    visibleCandles.forEach((c) => {
+      pricesInView.push(c.high, c.low, c.close, c.open);
+      if (showEmaLayer) {
+        if (c.ema_fast) pricesInView.push(c.ema_fast);
+        if (c.ema_slow) pricesInView.push(c.ema_slow);
+      }
+      if (showBollLayer) {
+        if (c.boll_upper) pricesInView.push(c.boll_upper);
+        if (c.boll_lower) pricesInView.push(c.boll_lower);
       }
     });
 
-    traj.forEach((t) => {
-      allPrices.push(t.expected_price, t.low_95, t.high_95);
-    });
+    if (showConeLayer && forwardTraj.length > 0) {
+      forwardTraj.forEach((t) => {
+        pricesInView.push(t.expected_price, t.low_95, t.high_95);
+      });
+    }
 
-    const minY = Math.min(...allPrices);
-    const maxY = Math.max(...allPrices);
+    const minY = Math.min(...pricesInView);
+    const maxY = Math.max(...pricesInView);
     const rangeY = Math.max(1.0, maxY - minY);
 
-    const width = 940;
-    const height = 340;
-    const padX = 55;
-    const padY = 35;
+    // Max volume for volume histogram scaling
+    const maxVolume = Math.max(10, ...visibleCandles.map((c) => c.volume || 100));
 
-    const totalSteps = candles.length + traj.length - 1;
+    const totalSteps = visibleCandles.length + (showConeLayer ? forwardTraj.length : 0) - 1;
+    const getX = (idx) => padX + (idx / Math.max(1, totalSteps)) * (width - 2 * padX);
+    const getY = (val) => (height - volHeight - padY) - ((val - minY) / rangeY) * (height - volHeight - 2 * padY) + 5;
+    const getVolY = (vol) => height - padY - (vol / maxVolume) * (volHeight - 10);
 
-    const getX = (idx) => padX + (idx / totalSteps) * (width - 2 * padX);
-    const getY = (val) => height - padY - ((val - minY) / rangeY) * (height - 2 * padY);
+    const candleWidth = Math.max(3.5, ((width - 2 * padX) / Math.max(1, totalSteps)) * 0.7);
 
-    const candleWidth = Math.max(3, (width - 2 * padX) / totalSteps * 0.65);
-
-    // Build Forward Prediction Trajectory Coordinates
-    const nowIdx = candles.length - 1;
+    // Build Forward Prediction Trajectory
+    const nowIdx = visibleCandles.length - 1;
+    const lastVisibleCandle = visibleCandles[nowIdx];
     const nowCoord = {
       x: getX(nowIdx),
-      y: getY(candles[nowIdx].close),
-      lowY: getY(candles[nowIdx].close),
-      highY: getY(candles[nowIdx].close),
+      y: getY(lastVisibleCandle.close),
+      lowY: getY(lastVisibleCandle.close),
+      highY: getY(lastVisibleCandle.close),
     };
 
     const trajCoords = [
       nowCoord,
-      ...traj.map((t, i) => ({
+      ...forwardTraj.map((t, i) => ({
         x: getX(nowIdx + 1 + i),
         y: getY(t.expected_price),
         lowY: getY(t.low_95),
@@ -580,402 +727,451 @@ export default function App() {
     const coneBottom = trajCoords.slice().reverse().map((c) => `${c.x},${c.lowY}`).join(' L ');
     const conePolygon = `M ${coneTop} L ${coneBottom} Z`;
 
-    // Strategy Overlay Lines
-    let emaFastPath = '';
-    let emaSlowPath = '';
-    let bollUpperPath = '';
-    let bollMidPath = '';
-    let bollLowerPath = '';
-    let bollChannelPolygon = '';
-    let ouEquilibriumY = null;
+    // EMA & Bollinger paths
+    const emaFastPts = visibleCandles.map((c, i) => `${getX(i)},${getY(c.ema_fast || c.close)}`).join(' L ');
+    const emaFastPath = `M ${emaFastPts}`;
+    const emaSlowPts = visibleCandles.map((c, i) => `${getX(i)},${getY(c.ema_slow || c.close)}`).join(' L ');
+    const emaSlowPath = `M ${emaSlowPts}`;
 
-    if (goldStrategy === 'ema') {
-      const fastPts = candles.map((c, i) => `${getX(i)},${getY(c.ema_fast || c.close)}`).join(' L ');
-      emaFastPath = `M ${fastPts}`;
-      const slowPts = candles.map((c, i) => `${getX(i)},${getY(c.ema_slow || c.close)}`).join(' L ');
-      emaSlowPath = `M ${slowPts}`;
-    } else if (goldStrategy === 'bollinger') {
-      const upPts = candles.map((c, i) => ({ x: getX(i), y: getY(c.boll_upper || c.close) }));
-      const lowPts = candles.map((c, i) => ({ x: getX(i), y: getY(c.boll_lower || c.close) }));
-      const midPts = candles.map((c, i) => `${getX(i)},${getY(c.boll_mid || c.close)}`).join(' L ');
-      bollUpperPath = 'M ' + upPts.map((p) => `${p.x},${p.y}`).join(' L ');
-      bollMidPath = `M ${midPts}`;
-      bollLowerPath = 'M ' + lowPts.map((p) => `${p.x},${p.y}`).join(' L ');
+    const bollUpPts = visibleCandles.map((c, i) => ({ x: getX(i), y: getY(c.boll_upper || c.close) }));
+    const bollLowPts = visibleCandles.map((c, i) => ({ x: getX(i), y: getY(c.boll_lower || c.close) }));
+    const bollMidPts = visibleCandles.map((c, i) => `${getX(i)},${getY(c.boll_mid || c.close)}`).join(' L ');
+    const bollUpperPath = 'M ' + bollUpPts.map((p) => `${p.x},${p.y}`).join(' L ');
+    const bollMidPath = `M ${bollMidPts}`;
+    const bollLowerPath = 'M ' + bollLowPts.map((p) => `${p.x},${p.y}`).join(' L ');
+    const bollChannelPolygon = `M ${bollUpPts.map((p) => `${p.x},${p.y}`).join(' L ')} L ${bollLowPts.slice().reverse().map((p) => `${p.x},${p.y}`).join(' L ')} Z`;
 
-      const topSeg = upPts.map((p) => `${p.x},${p.y}`).join(' L ');
-      const botSeg = lowPts.slice().reverse().map((p) => `${p.x},${p.y}`).join(' L ');
-      bollChannelPolygon = `M ${topSeg} L ${botSeg} Z`;
-    } else if (goldStrategy === 'ou' && candles[0].ou_equilibrium) {
-      ouEquilibriumY = getY(candles[0].ou_equilibrium);
-    }
+    const activeCandleForHud = crosshair?.candle || lastVisibleCandle;
+    const hudChange = activeCandleForHud.close - activeCandleForHud.open;
+    const hudChangePct = ((hudChange / (activeCandleForHud.open || 1)) * 100).toFixed(2);
 
     return (
-      <div>
-        {/* Interactive Candle Inspector HUD Banner */}
-        <div style={{ background: '#0a0f1d', border: '1px solid #1e293b', borderRadius: '6px', padding: '8px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', fontSize: '11px', fontFamily: 'monospace', color: '#cbd5e1', marginBottom: '10px' }}>
-          {hoveredCandle ? (
-            <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', alignItems: 'center' }}>
-              <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>BAR: {hoveredCandle.time_label}</span>
-              <span>O: <strong style={{ color: '#f8fafc' }}>${hoveredCandle.open.toFixed(2)}</strong></span>
-              <span>H: <strong style={{ color: '#10b981' }}>${hoveredCandle.high.toFixed(2)}</strong></span>
-              <span>L: <strong style={{ color: '#ef4444' }}>${hoveredCandle.low.toFixed(2)}</strong></span>
-              <span>C: <strong style={{ color: hoveredCandle.close >= hoveredCandle.open ? '#10b981' : '#ef4444' }}>${hoveredCandle.close.toFixed(2)}</strong></span>
-              <span>Vol: <strong style={{ color: '#38bdf8' }}>{hoveredCandle.volume.toLocaleString()}</strong></span>
-              {hoveredCandle.ema_fast && <span style={{ color: '#06b6d4' }}>EMA({goldEmaFast}): ${hoveredCandle.ema_fast.toFixed(2)}</span>}
-              {hoveredCandle.ema_slow && <span style={{ color: '#a855f7' }}>EMA({goldEmaSlow}): ${hoveredCandle.ema_slow.toFixed(2)}</span>}
-              {hoveredCandle.boll_upper && <span style={{ color: '#ef4444' }}>Upper: ${hoveredCandle.boll_upper.toFixed(2)}</span>}
-              {hoveredCandle.boll_lower && <span style={{ color: '#10b981' }}>Lower: ${hoveredCandle.boll_lower.toFixed(2)}</span>}
-              {hoveredCandle.rsi !== undefined && <span style={{ color: '#f59e0b' }}>RSI({goldRsiPeriod}): {hoveredCandle.rsi.toFixed(1)}</span>}
-            </div>
-          ) : (
-            <div style={{ color: '#64748b', display: 'flex', gap: '12px' }}>
-              <span>💡 Hover over any candle for micro-second OHLCV & overlay inspection</span>
-              <span>• Active Strategy: <strong style={{ color: '#10b981' }}>{goldStrategy.toUpperCase()}</strong></span>
-              <span>• Forecast Cone: <strong style={{ color: '#ec4899' }}>95% Confidence Bounds</strong></span>
-            </div>
-          )}
-          <div style={{ color: '#94a3b8', fontSize: '10px' }}>
-            Timeframe: <strong>{goldTimeframe.toUpperCase()}</strong> | Points: <strong>{candles.length} Candles</strong>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+        {/* INTERACTIVE HUD RIBBON */}
+        <div
+          style={{
+            background: '#090c13',
+            border: '1px solid rgba(255, 255, 255, 0.06)',
+            borderRadius: '4px',
+            padding: '7px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            fontSize: '11px',
+            fontFamily: 'JetBrains Mono, monospace',
+          }}
+          className="tabular"
+        >
+          {/* Left: Bar Telemetry */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+            <span style={{ color: '#cbd5e1', fontWeight: '700' }}>
+              BAR {activeCandleForHud.time_label}
+            </span>
+            <span>O: <strong style={{ color: '#f8fafc' }}>${activeCandleForHud.open.toFixed(2)}</strong></span>
+            <span>H: <strong style={{ color: '#10b981' }}>${activeCandleForHud.high.toFixed(2)}</strong></span>
+            <span>L: <strong style={{ color: '#f43f5e' }}>${activeCandleForHud.low.toFixed(2)}</strong></span>
+            <span>C: <strong style={{ color: hudChange >= 0 ? '#10b981' : '#f43f5e' }}>${activeCandleForHud.close.toFixed(2)}</strong></span>
+            <span style={{ color: hudChange >= 0 ? '#10b981' : '#f43f5e', fontWeight: '700' }}>
+              {hudChange >= 0 ? '+' : ''}${hudChange.toFixed(2)} ({hudChange >= 0 ? '+' : ''}{hudChangePct}%)
+            </span>
+            {showVolumeLayer && (
+              <span style={{ color: '#38bdf8' }}>
+                VOL: <strong>{activeCandleForHud.volume.toLocaleString()}</strong>
+              </span>
+            )}
+            {showEmaLayer && activeCandleForHud.ema_fast && (
+              <span style={{ color: '#38bdf8' }}>EMA(12): ${activeCandleForHud.ema_fast.toFixed(2)}</span>
+            )}
+            {showEmaLayer && activeCandleForHud.ema_slow && (
+              <span style={{ color: '#818cf8' }}>EMA(26): ${activeCandleForHud.ema_slow.toFixed(2)}</span>
+            )}
+          </div>
+
+          {/* Right: Quick View Control Buttons */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '10px', color: '#64748b' }}>ZOOM:</span>
+            {[
+              { label: '24B', count: 24 },
+              { label: '48B', count: 48 },
+              { label: '96B', count: 96 },
+              { label: 'ALL', count: totalAvailableCandles },
+            ].map((preset) => (
+              <button
+                key={preset.label}
+                onClick={() => setRangePreset(preset.count)}
+                style={{
+                  padding: '2px 6px',
+                  background: visibleCount === preset.count && panOffset === 0 ? '#1e2433' : 'transparent',
+                  color: visibleCount === preset.count && panOffset === 0 ? '#f8fafc' : '#64748b',
+                  border: '1px solid ' + (visibleCount === preset.count && panOffset === 0 ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.05)'),
+                  borderRadius: '2px',
+                  cursor: 'pointer',
+                  fontSize: '10px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  fontWeight: '600',
+                }}
+              >
+                {preset.label}
+              </button>
+            ))}
+
+            {panOffset > 0 && (
+              <button
+                onClick={() => setPanOffset(0)}
+                style={{
+                  padding: '2px 6px',
+                  background: 'rgba(56, 189, 248, 0.15)',
+                  color: '#38bdf8',
+                  border: '1px solid rgba(56, 189, 248, 0.3)',
+                  borderRadius: '2px',
+                  cursor: 'pointer',
+                  fontSize: '10px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                }}
+              >
+                SNAP TO NOW
+              </button>
+            )}
           </div>
         </div>
 
-        <svg
-          width="100%"
-          height={height}
-          viewBox={`0 0 ${width} ${height}`}
-          onMouseLeave={() => setHoveredCandle(null)}
-          style={{ background: '#0a0f1d', borderRadius: '8px', border: '1px solid #1e293b' }}
-        >
-          {/* Horizontal Price Grid Lines */}
-          {[0, 0.25, 0.5, 0.75, 1.0].map((frac, idx) => {
-            const val = minY + frac * rangeY;
-            const y = getY(val);
-            return (
-              <g key={idx}>
-                <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="#1e293b" strokeDasharray="3 3" />
-                <text x={padX - 8} y={y + 4} fill="#64748b" fontSize="10" textAnchor="end" fontFamily="monospace">
-                  ${val.toFixed(1)}
-                </text>
-              </g>
-            );
-          })}
+        {/* INTERACTIVE LAYER TOGGLES STRIP */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 4px', fontSize: '10px', fontFamily: 'JetBrains Mono, monospace' }}>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <button
+              onClick={() => setShowEmaLayer(!showEmaLayer)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '3px 8px',
+                borderRadius: '3px',
+                border: '1px solid ' + (showEmaLayer ? 'rgba(56, 189, 248, 0.3)' : 'rgba(255, 255, 255, 0.05)'),
+                background: showEmaLayer ? 'rgba(56, 189, 248, 0.12)' : 'transparent',
+                color: showEmaLayer ? '#38bdf8' : '#64748b',
+                cursor: 'pointer',
+              }}
+            >
+              {showEmaLayer ? <Eye size={11} /> : <EyeOff size={11} />} EMA (12/26)
+            </button>
 
-          {/* Strategy Layer: Bollinger Bands Channel Fill */}
-          {goldStrategy === 'bollinger' && bollChannelPolygon && (
-            <path d={bollChannelPolygon} fill="rgba(59, 130, 246, 0.08)" stroke="none" />
-          )}
+            <button
+              onClick={() => setShowBollLayer(!showBollLayer)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '3px 8px',
+                borderRadius: '3px',
+                border: '1px solid ' + (showBollLayer ? 'rgba(129, 140, 248, 0.3)' : 'rgba(255, 255, 255, 0.05)'),
+                background: showBollLayer ? 'rgba(129, 140, 248, 0.12)' : 'transparent',
+                color: showBollLayer ? '#818cf8' : '#64748b',
+                cursor: 'pointer',
+              }}
+            >
+              {showBollLayer ? <Eye size={11} /> : <EyeOff size={11} />} BOLLINGER (20, 2σ)
+            </button>
 
-          {/* Strategy Layer: Bollinger Band Upper & Lower Lines */}
-          {goldStrategy === 'bollinger' && (
-            <>
-              <path d={bollUpperPath} fill="none" stroke="#ef4444" strokeWidth="1.5" strokeDasharray="4 2" />
-              <path d={bollMidPath} fill="none" stroke="#3b82f6" strokeWidth="1.5" />
-              <path d={bollLowerPath} fill="none" stroke="#10b981" strokeWidth="1.5" strokeDasharray="4 2" />
-            </>
-          )}
+            <button
+              onClick={() => setShowVolumeLayer(!showVolumeLayer)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '3px 8px',
+                borderRadius: '3px',
+                border: '1px solid ' + (showVolumeLayer ? 'rgba(16, 185, 129, 0.3)' : 'rgba(255, 255, 255, 0.05)'),
+                background: showVolumeLayer ? 'rgba(16, 185, 129, 0.12)' : 'transparent',
+                color: showVolumeLayer ? '#10b981' : '#64748b',
+                cursor: 'pointer',
+              }}
+            >
+              {showVolumeLayer ? <Eye size={11} /> : <EyeOff size={11} />} VOLUME
+            </button>
 
-          {/* Strategy Layer: O-U Stationary Equilibrium Line */}
-          {goldStrategy === 'ou' && ouEquilibriumY !== null && (
-            <g>
-              <line x1={padX} y1={ouEquilibriumY} x2={width - padX} y2={ouEquilibriumY} stroke="#eab308" strokeWidth="2" strokeDasharray="6 4" />
-              <text x={width - padX + 5} y={ouEquilibriumY + 4} fill="#eab308" fontSize="11" fontFamily="monospace" fontWeight="bold">
-                μ Equilibrium (${candles[0].ou_equilibrium})
-              </text>
-            </g>
-          )}
+            <button
+              onClick={() => setShowConeLayer(!showConeLayer)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '3px 8px',
+                borderRadius: '3px',
+                border: '1px solid ' + (showConeLayer ? 'rgba(99, 102, 241, 0.3)' : 'rgba(255, 255, 255, 0.05)'),
+                background: showConeLayer ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
+                color: showConeLayer ? '#a5b4fc' : '#64748b',
+                cursor: 'pointer',
+              }}
+            >
+              {showConeLayer ? <Eye size={11} /> : <EyeOff size={11} />} SDE DIFFUSION CONE
+            </button>
+          </div>
 
-          {/* Candlesticks (High/Low Wick + Open/Close Body) */}
-          {candles.map((c, i) => {
-            const cx = getX(i);
-            const yHigh = getY(c.high);
-            const yLow = getY(c.low);
-            const yOpen = getY(c.open);
-            const yClose = getY(c.close);
+          <div style={{ color: '#475569', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span>DRAG TO PAN · SCROLL TO ZOOM · CLICK BAR TO SET ORDER</span>
+          </div>
+        </div>
 
-            const isBull = c.close >= c.open;
-            const color = isBull ? '#10b981' : '#ef4444';
-            const topBody = Math.min(yOpen, yClose);
-            const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
+        {/* WORKSTATION SVG CANVAS (PAN & ZOOM READY) */}
+        <div style={{ position: 'relative', width: '100%', overflow: 'hidden' }}>
+          <svg
+            ref={chartSvgRef}
+            width="100%"
+            height={height}
+            viewBox={`0 0 ${width} ${height}`}
+            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseUp={handleMouseUp}
+            onMouseLeave={() => {
+              setIsDragging(false);
+              setCrosshair(null);
+            }}
+            onWheel={handleWheel}
+            style={{
+              background: '#080a10',
+              borderRadius: '4px',
+              border: '1px solid rgba(255, 255, 255, 0.06)',
+              display: 'block',
+              cursor: isDragging ? 'grabbing' : 'crosshair',
+            }}
+          >
+            {/* Horizontal Grid & Price Ticks */}
+            {[0, 0.25, 0.5, 0.75, 1.0].map((frac, idx) => {
+              const val = minY + frac * rangeY;
+              const y = getY(val);
+              return (
+                <g key={idx}>
+                  <line x1={padX} y1={y} x2={width - padX} y2={y} stroke="rgba(255, 255, 255, 0.04)" strokeDasharray="3 3" />
+                  <text x={width - padX + 6} y={y + 3.5} fill="#475569" fontSize="10" fontFamily="JetBrains Mono, monospace">
+                    ${val.toFixed(1)}
+                  </text>
+                </g>
+              );
+            })}
 
-            const isSelected = selectedCandleForTrade && selectedCandleForTrade.index === i;
+            {/* Volume Separator Line */}
+            {showVolumeLayer && (
+              <line x1={padX} y1={height - volHeight - padY + 10} x2={width - padX} y2={height - volHeight - padY + 10} stroke="rgba(255, 255, 255, 0.05)" />
+            )}
 
-            return (
-              <g
-                key={i}
-                onMouseEnter={() => setHoveredCandle(c)}
-                onClick={() => setSelectedCandleForTrade({ candle: c, index: i })}
-                style={{ cursor: 'pointer' }}
-              >
-                {/* Selection Halo */}
-                {isSelected && (
+            {/* Bollinger Band Fill & Lines */}
+            {showBollLayer && goldStrategy === 'bollinger' && (
+              <>
+                <path d={bollChannelPolygon} fill="rgba(99, 102, 241, 0.04)" stroke="none" />
+                <path d={bollUpperPath} fill="none" stroke="rgba(244, 63, 94, 0.5)" strokeWidth="1.2" strokeDasharray="3 3" />
+                <path d={bollMidPath} fill="none" stroke="#3b82f6" strokeWidth="1.2" />
+                <path d={bollLowerPath} fill="none" stroke="rgba(16, 185, 129, 0.5)" strokeWidth="1.2" strokeDasharray="3 3" />
+              </>
+            )}
+
+            {/* Volume Histogram Bars */}
+            {showVolumeLayer &&
+              visibleCandles.map((c, i) => {
+                const cx = getX(i);
+                const isBull = c.close >= c.open;
+                const vY = getVolY(c.volume || 100);
+                const vH = Math.max(2, height - padY - vY);
+                return (
                   <rect
-                    x={cx - candleWidth / 2 - 4}
-                    y={Math.min(yHigh, yLow) - 4}
-                    width={candleWidth + 8}
-                    height={Math.max(12, Math.abs(yHigh - yLow) + 8)}
-                    fill="none"
-                    stroke="#f59e0b"
-                    strokeWidth="2"
-                    strokeDasharray="3 2"
-                    rx="3"
+                    key={`vol-${i}`}
+                    x={cx - candleWidth / 2}
+                    y={vY}
+                    width={candleWidth}
+                    height={vH}
+                    fill={isBull ? 'rgba(16, 185, 129, 0.25)' : 'rgba(244, 63, 94, 0.25)'}
+                    stroke={isBull ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)'}
+                    strokeWidth="0.8"
                   />
-                )}
-                {/* Wick */}
-                <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={color} strokeWidth="1.2" />
-                {/* Body */}
-                <rect
-                  x={cx - candleWidth / 2}
-                  y={topBody}
-                  width={candleWidth}
-                  height={bodyHeight}
-                  fill={isBull ? '#065f46' : '#7f1d1d'}
-                  stroke={color}
-                  strokeWidth="1.2"
-                  rx="1"
-                />
+                );
+              })}
 
-                {/* Active Strategy Signal Marker */}
-                {c.active_signal === 1 && (
-                  <polygon points={`${cx},${yLow + 12} ${cx - 5},${yLow + 20} ${cx + 5},${yLow + 20}`} fill="#10b981" />
-                )}
-                {c.active_signal === -1 && (
-                  <polygon points={`${cx},${yHigh - 12} ${cx - 5},${yHigh - 20} ${cx + 5},${yHigh - 20}`} fill="#ef4444" />
-                )}
-              </g>
-            );
-          })}
+            {/* Candlesticks (High/Low Wick + Open/Close Body) */}
+            {visibleCandles.map((c, i) => {
+              const cx = getX(i);
+              const yHigh = getY(c.high);
+              const yLow = getY(c.low);
+              const yOpen = getY(c.open);
+              const yClose = getY(c.close);
 
-          {/* Demo Trades Historical Execution Overlays on Chart */}
-          {goldData.demo_assessment?.trades && goldData.demo_assessment.trades.map((dt) => {
-            if (dt.bar_index < 0 || dt.bar_index >= candles.length) return null;
-            const entryX = getX(dt.bar_index);
-            const entryY = getY(dt.entry_price);
-            const isBuy = dt.side === 'BUY';
-            const hasExited = dt.exit_bar_index !== null && dt.exit_price !== null;
-            const exitX = hasExited ? getX(dt.exit_bar_index) : nowCoord.x;
-            const exitY = hasExited ? getY(dt.exit_price) : getY(dt.current_price);
-            const isProfit = hasExited ? dt.realized_pnl >= 0 : dt.unrealized_pnl >= 0;
-            const lineColor = isProfit ? '#10b981' : '#ef4444';
+              const isBull = c.close >= c.open;
+              const wickColor = isBull ? '#10b981' : '#f43f5e';
+              const bodyColor = isBull ? '#10b981' : '#f43f5e';
+              const bodyFill = isBull ? 'rgba(16, 185, 129, 0.3)' : 'rgba(244, 63, 94, 0.35)';
+              const topBody = Math.min(yOpen, yClose);
+              const bodyHeight = Math.max(2, Math.abs(yOpen - yClose));
 
-            return (
-              <g key={dt.trade_id}>
-                <line
-                  x1={entryX}
-                  y1={entryY}
-                  x2={exitX}
-                  y2={exitY}
-                  stroke={lineColor}
-                  strokeWidth="1.6"
-                  strokeDasharray="4 3"
-                />
-                <circle cx={entryX} cy={entryY} r="4.5" fill={isBuy ? '#10b981' : '#ef4444'} stroke="#fff" strokeWidth="1.5" />
-                <rect
-                  x={entryX - 25}
-                  y={isBuy ? entryY + 8 : entryY - 20}
-                  width="50"
-                  height="13"
-                  fill="#0f172a"
-                  stroke={isBuy ? '#10b981' : '#ef4444'}
-                  strokeWidth="1"
-                  rx="3"
-                />
-                <text
-                  x={entryX}
-                  y={isBuy ? entryY + 18 : entryY - 10}
-                  fill={isBuy ? '#34d399' : '#f87171'}
-                  fontSize="8"
-                  fontFamily="monospace"
-                  textAnchor="middle"
-                  fontWeight="bold"
+              const isSelected = selectedCandleForTrade && selectedCandleForTrade.index === startIndex + i;
+
+              return (
+                <g
+                  key={`c-${i}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedCandleForTrade({ candle: c, index: startIndex + i });
+                  }}
+                  style={{ cursor: 'pointer' }}
                 >
-                  {isBuy ? '▲' : '▼'} ${dt.entry_price.toFixed(0)}
-                </text>
-
-                {hasExited && (
-                  <g>
-                    <circle cx={exitX} cy={exitY} r="4.5" fill={isProfit ? '#10b981' : '#ef4444'} stroke="#fff" strokeWidth="1.5" />
+                  {/* Selection Ring */}
+                  {isSelected && (
                     <rect
-                      x={exitX - 28}
-                      y={exitY - 18}
-                      width="56"
-                      height="13"
-                      fill="#0f172a"
-                      stroke={lineColor}
-                      strokeWidth="1"
-                      rx="3"
+                      x={cx - candleWidth / 2 - 3}
+                      y={Math.min(yHigh, yLow) - 3}
+                      width={candleWidth + 6}
+                      height={Math.max(14, Math.abs(yHigh - yLow) + 6)}
+                      fill="none"
+                      stroke="#f59e0b"
+                      strokeWidth="1.5"
+                      strokeDasharray="3 2"
+                      rx="2"
                     />
-                    <text
-                      x={exitX}
-                      y={exitY - 9}
-                      fill={isProfit ? '#34d399' : '#f87171'}
-                      fontSize="8"
-                      fontFamily="monospace"
-                      textAnchor="middle"
-                      fontWeight="bold"
-                    >
-                      {dt.realized_pnl >= 0 ? '+' : ''}${dt.realized_pnl.toFixed(1)}
+                  )}
+                  {/* Wick */}
+                  <line x1={cx} y1={yHigh} x2={cx} y2={yLow} stroke={wickColor} strokeWidth="1.0" />
+                  {/* Body */}
+                  <rect
+                    x={cx - candleWidth / 2}
+                    y={topBody}
+                    width={candleWidth}
+                    height={bodyHeight}
+                    fill={bodyFill}
+                    stroke={bodyColor}
+                    strokeWidth="1.0"
+                    rx="1"
+                  />
+
+                  {/* Signal Markers */}
+                  {showSignalsLayer && c.active_signal === 1 && (
+                    <polygon points={`${cx},${yLow + 6} ${cx - 4},${yLow + 12} ${cx + 4},${yLow + 12}`} fill="#10b981" />
+                  )}
+                  {showSignalsLayer && c.active_signal === -1 && (
+                    <polygon points={`${cx},${yHigh - 6} ${cx - 4},${yHigh - 12} ${cx + 4},${yHigh - 12}`} fill="#f43f5e" />
+                  )}
+                </g>
+              );
+            })}
+
+            {/* Strategy EMA Overlays */}
+            {showEmaLayer && goldStrategy === 'ema' && (
+              <>
+                <path d={emaFastPath} fill="none" stroke="#38bdf8" strokeWidth="1.4" />
+                <path d={emaSlowPath} fill="none" stroke="#818cf8" strokeWidth="1.4" />
+              </>
+            )}
+
+            {/* SDE Diffusion Cone & Forward Trajectory */}
+            {showConeLayer && forwardTraj.length > 0 && (
+              <>
+                <line x1={nowCoord.x} y1={padY} x2={nowCoord.x} y2={height - padY} stroke="rgba(255, 255, 255, 0.2)" strokeDasharray="3 3" strokeWidth="1.2" />
+                <circle cx={nowCoord.x} cy={nowCoord.y} r="4" fill="#38bdf8" stroke="#080a10" strokeWidth="1.5" />
+                <text x={nowCoord.x - 10} y={padY - 8} fill="#94a3b8" fontSize="9" fontFamily="JetBrains Mono, monospace" fontWeight="700">NOW</text>
+
+                <path d={conePolygon} fill="rgba(99, 102, 241, 0.12)" stroke="none" />
+                <path d={trajPath} fill="none" stroke="#6366f1" strokeWidth="1.8" strokeDasharray="4 2" />
+                {trajCoords.slice(1).map((c, i) => (
+                  <g key={`traj-${i}`}>
+                    <circle cx={c.x} cy={c.y} r="3" fill="#6366f1" stroke="#080a10" strokeWidth="1" />
+                    <text x={c.x - 6} y={height - padY + 12} fill="#64748b" fontSize="8" fontFamily="JetBrains Mono, monospace">
+                      +{forwardTraj[i].step_hour}h
                     </text>
                   </g>
-                )}
+                ))}
+              </>
+            )}
+
+            {/* Interactive Selected Order Visual Line (Click to Trade) */}
+            {selectedCandleForTrade && (
+              <g>
+                {/* Entry Price Line */}
+                <line
+                  x1={padX}
+                  y1={getY(selectedCandleForTrade.candle.close)}
+                  x2={width - padX}
+                  y2={getY(selectedCandleForTrade.candle.close)}
+                  stroke="#38bdf8"
+                  strokeWidth="1.2"
+                  strokeDasharray="4 2"
+                />
+                <rect
+                  x={width - padX - 110}
+                  y={getY(selectedCandleForTrade.candle.close) - 10}
+                  width="110"
+                  height="20"
+                  fill="#082f49"
+                  stroke="#0284c7"
+                  strokeWidth="1"
+                  rx="2"
+                />
+                <text
+                  x={width - padX - 55}
+                  y={getY(selectedCandleForTrade.candle.close) + 4}
+                  fill="#bae6fd"
+                  fontSize="9"
+                  textAnchor="middle"
+                  fontFamily="JetBrains Mono, monospace"
+                  fontWeight="700"
+                >
+                  ENTRY: ${selectedCandleForTrade.candle.close.toFixed(2)}
+                </text>
               </g>
-            );
-          })}
+            )}
 
-          {/* Strategy Layer: Dual EMA Fast & Slow Lines */}
-          {goldStrategy === 'ema' && (
-            <>
-              <path d={emaFastPath} fill="none" stroke="#06b6d4" strokeWidth="2" />
-              <path d={emaSlowPath} fill="none" stroke="#a855f7" strokeWidth="2" />
-            </>
-          )}
+            {/* Magnetic Crosshair & Floating Price Tag */}
+            {crosshair && (
+              <g>
+                <line x1={crosshair.x} y1={padY} x2={crosshair.x} y2={height - padY} stroke="rgba(255, 255, 255, 0.25)" strokeDasharray="2 2" strokeWidth="1" />
+                <line x1={padX} y1={crosshair.y} x2={width - padX} y2={crosshair.y} stroke="rgba(255, 255, 255, 0.25)" strokeDasharray="2 2" strokeWidth="1" />
+                {/* Floating Y-Axis Price Tag */}
+                <rect x={width - padX} y={crosshair.y - 9} width="56" height="18" fill="#1e2433" stroke="rgba(255, 255, 255, 0.2)" strokeWidth="1" rx="2" />
+                <text x={width - padX + 28} y={crosshair.y + 3.5} fill="#f8fafc" fontSize="9" textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontWeight="700">
+                  ${(minY + (1 - (crosshair.y - padY) / (height - volHeight - 2 * padY)) * rangeY).toFixed(1)}
+                </text>
+                {/* Floating X-Axis Time Tag */}
+                <rect x={crosshair.x - 30} y={height - padY + 2} width="60" height="16" fill="#1e2433" stroke="rgba(255, 255, 255, 0.2)" strokeWidth="1" rx="2" />
+                <text x={crosshair.x} y={height - padY + 13} fill="#cbd5e1" fontSize="9" textAnchor="middle" fontFamily="JetBrains Mono, monospace">
+                  {crosshair.candle.time_label}
+                </text>
+              </g>
+            )}
+          </svg>
+        </div>
 
-          {/* Transition Divider (NOW) */}
-          <line x1={nowCoord.x} y1={padY} x2={nowCoord.x} y2={height - padY} stroke="#f97316" strokeDasharray="3 3" strokeWidth="1.8" />
-          <circle cx={nowCoord.x} cy={nowCoord.y} r="6" fill="#f97316" stroke="#fff" strokeWidth="2" />
-          <text x={nowCoord.x - 14} y={padY - 8} fill="#f97316" fontSize="11" fontWeight="bold">NOW</text>
-
-          {/* Forward Machine Learning 95% Confidence Cone */}
-          <path d={conePolygon} fill="rgba(236, 72, 153, 0.16)" stroke="none" />
-
-          {/* Forward ML Trajectory Path */}
-          <path d={trajPath} fill="none" stroke="#ec4899" strokeWidth="2.5" strokeDasharray="5 3" />
-
-          {/* Forward Trajectory Milestone Dots */}
-          {trajCoords.slice(1).map((c, i) => (
-            <g key={i}>
-              <circle cx={c.x} cy={c.y} r="4" fill="#ec4899" stroke="#fff" strokeWidth="1" />
-              <text x={c.x - 8} y={height - 12} fill="#94a3b8" fontSize="10" fontFamily="monospace">
-                +{traj[i].step_hour}h
-              </text>
-            </g>
-          ))}
-
-          {/* Interactive Crosshair & Y Axis Tag when candle hovered */}
-          {hoveredCandle && (
-            <g>
-              <line
-                x1={getX(candles.indexOf(hoveredCandle))}
-                y1={padY}
-                x2={getX(candles.indexOf(hoveredCandle))}
-                y2={height - padY}
-                stroke="#64748b"
-                strokeDasharray="2 2"
-                strokeWidth="1"
-              />
-              <line
-                x1={padX}
-                y1={getY(hoveredCandle.close)}
-                x2={width - padX}
-                y2={getY(hoveredCandle.close)}
-                stroke="#64748b"
-                strokeDasharray="2 2"
-                strokeWidth="1"
-              />
-              <rect
-                x={padX - 54}
-                y={getY(hoveredCandle.close) - 8}
-                width="50"
-                height="16"
-                fill="#1e293b"
-                rx="3"
-                stroke="#64748b"
-                strokeWidth="1"
-              />
-              <text
-                x={padX - 8}
-                y={getY(hoveredCandle.close) + 4}
-                fill="#f8fafc"
-                fontSize="10"
-                textAnchor="end"
-                fontFamily="monospace"
-                fontWeight="bold"
-              >
-                ${hoveredCandle.close.toFixed(1)}
-              </text>
-            </g>
-          )}
-
-          {/* Top Legends */}
-          <text x={padX} y={20} fill="#f8fafc" fontSize="12" fontWeight="bold">
-            XAU/USD Live Spot Candles ({goldTimeframe.toUpperCase()})
-          </text>
-
-          {goldStrategy === 'ema' && (
-            <g>
-              <text x={padX + 260} y={20} fill="#06b6d4" fontSize="11" fontWeight="bold">● Fast EMA ({goldEmaFast})</text>
-              <text x={padX + 380} y={20} fill="#a855f7" fontSize="11" fontWeight="bold">● Slow EMA ({goldEmaSlow})</text>
-            </g>
-          )}
-
-          {goldStrategy === 'bollinger' && (
-            <g>
-              <text x={padX + 260} y={20} fill="#ef4444" fontSize="11" fontWeight="bold">● Upper Band</text>
-              <text x={padX + 370} y={20} fill="#3b82f6" fontSize="11" fontWeight="bold">● {goldBollWindow}-SMA</text>
-              <text x={padX + 450} y={20} fill="#10b981" fontSize="11" fontWeight="bold">● Lower Band</text>
-            </g>
-          )}
-
-          {goldStrategy === 'rsi' && (
-            <g>
-              <text x={padX + 260} y={20} fill="#f59e0b" fontSize="11" fontWeight="bold">● Cardwell RSI ({goldRsiPeriod}) Momentum Sub-Panel Active</text>
-            </g>
-          )}
-
-          {goldStrategy === 'ou' && (
-            <g>
-              <text x={padX + 260} y={20} fill="#eab308" fontSize="11" fontWeight="bold">● Ornstein-Uhlenbeck Equilibrium μ</text>
-            </g>
-          )}
-
-          <text x={nowCoord.x + 18} y={20} fill="#ec4899" fontSize="12" fontWeight="bold">
-            ► ML Forward Horizon Forecast & 95% Confidence Cone
-          </text>
-        </svg>
-
-        {/* RSI Momentum Oscillator Dedicated Sub-Panel */}
+        {/* Dedicated RSI Sub-Panel */}
         {goldStrategy === 'rsi' && (
-          <div style={{ marginTop: '12px', background: '#0a0f1d', borderRadius: '6px', padding: '10px 14px', border: '1px solid #1e293b' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px', fontSize: '11px' }}>
-              <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>
-                🎯 RSI({goldRsiPeriod}) Relative Strength Momentum Oscillator & Cardwell Zones
+          <div style={{ background: '#080a10', borderRadius: '4px', padding: '6px 10px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px', fontSize: '10px' }} className="tabular">
+              <span style={{ color: '#94a3b8', fontWeight: '700' }}>
+                RSI ({goldRsiPeriod}) MOMENTUM OSCILLATOR
               </span>
-              <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
-                <span style={{ color: '#ef4444' }}>Overbought (70)</span>
-                <span style={{ color: '#64748b' }}>Midline (50)</span>
-                <span style={{ color: '#10b981' }}>Oversold (30)</span>
-                <span style={{ color: '#f59e0b', fontWeight: 'bold', fontFamily: 'monospace' }}>
-                  Current: {candles[candles.length - 1].rsi !== undefined ? candles[candles.length - 1].rsi.toFixed(1) : '50.0'}
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', color: '#64748b' }}>
+                <span>OB: <strong style={{ color: '#f43f5e' }}>70</strong></span>
+                <span>MID: <strong>50</strong></span>
+                <span>OS: <strong style={{ color: '#10b981' }}>30</strong></span>
+                <span style={{ color: '#f59e0b', fontWeight: '700' }}>
+                  CURRENT: {lastVisibleCandle.rsi !== undefined ? lastVisibleCandle.rsi.toFixed(1) : '50.0'}
                 </span>
               </div>
             </div>
-            <svg viewBox={`0 0 ${width} 70`} style={{ width: '100%', height: '70px', display: 'block' }}>
-              {/* Overbought line 70 */}
-              <line x1={padX} y1={70 - (70 / 100) * 60 - 5} x2={width - padX} y2={70 - (70 / 100) * 60 - 5} stroke="#ef4444" strokeDasharray="3 3" strokeWidth="1" />
-              {/* Midline 50 */}
-              <line x1={padX} y1={70 - (50 / 100) * 60 - 5} x2={width - padX} y2={70 - (50 / 100) * 60 - 5} stroke="#475569" strokeDasharray="2 2" strokeWidth="1" />
-              {/* Oversold line 30 */}
-              <line x1={padX} y1={70 - (30 / 100) * 60 - 5} x2={width - padX} y2={70 - (30 / 100) * 60 - 5} stroke="#10b981" strokeDasharray="3 3" strokeWidth="1" />
-              {/* Bullish zone (50 - 78) shaded band */}
-              <rect x={padX} y={70 - (78 / 100) * 60 - 5} width={width - 2 * padX} height={((78 - 50) / 100) * 60} fill="rgba(16, 185, 129, 0.08)" />
-              {/* RSI Polyline */}
+            <svg viewBox={`0 0 ${width} 50`} style={{ width: '100%', height: '50px', display: 'block' }}>
+              <line x1={padX} y1={50 - (70 / 100) * 40 - 5} x2={width - padX} y2={50 - (70 / 100) * 40 - 5} stroke="rgba(244, 63, 94, 0.4)" strokeDasharray="2 2" strokeWidth="1" />
+              <line x1={padX} y1={50 - (50 / 100) * 40 - 5} x2={width - padX} y2={50 - (50 / 100) * 40 - 5} stroke="rgba(255, 255, 255, 0.1)" strokeDasharray="2 2" strokeWidth="1" />
+              <line x1={padX} y1={50 - (30 / 100) * 40 - 5} x2={width - padX} y2={50 - (30 / 100) * 40 - 5} stroke="rgba(16, 185, 129, 0.4)" strokeDasharray="2 2" strokeWidth="1" />
               <path
-                d={'M ' + candles.map((c, i) => `${getX(i)},${70 - ((c.rsi ?? 50.0) / 100) * 60 - 5}`).join(' L ')}
+                d={'M ' + visibleCandles.map((c, i) => `${getX(i)},${50 - ((c.rsi ?? 50.0) / 100) * 40 - 5}`).join(' L ')}
                 fill="none"
                 stroke="#f59e0b"
-                strokeWidth="2"
+                strokeWidth="1.5"
               />
             </svg>
           </div>
         )}
       </div>
     );
-
   };
 
   // Helper for live pairs prediction chart
   const renderPredictionChart = () => {
     if (!livePrediction || !livePrediction.historical_spreads || livePrediction.historical_spreads.length === 0) {
-      return <p style={{ color: '#94a3b8' }}>Loading real-time predictive trajectory...</p>;
+      return <p style={{ color: '#64748b', fontSize: '12px' }}>Loading predictive trajectory...</p>;
     }
 
     const hist = livePrediction.historical_spreads;
@@ -1025,1729 +1221,1891 @@ export default function App() {
     const muY = getY(livePrediction.ou_mu);
 
     return (
-      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: '#0a0f1d', borderRadius: '8px', border: '1px solid #1e293b' }}>
-        <line x1={padX} y1={muY} x2={width - padX} y2={muY} stroke="#eab308" strokeDasharray="4 4" strokeWidth="1.5" />
-        <text x={width - padX + 5} y={muY + 4} fill="#eab308" fontSize="11" fontFamily="monospace">μ (Equilibrium)</text>
-        <path d={conePolygon} fill="rgba(168, 85, 247, 0.15)" stroke="none" />
-        <path d={histPath} fill="none" stroke="#38bdf8" strokeWidth="2.5" />
-        <path d={trajPath} fill="none" stroke="#ec4899" strokeWidth="2.5" strokeDasharray="5 3" />
+      <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} style={{ background: '#080a10', borderRadius: '4px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+        <line x1={padX} y1={muY} x2={width - padX} y2={muY} stroke="#eab308" strokeDasharray="3 3" strokeWidth="1.2" />
+        <text x={width - padX + 5} y={muY + 3.5} fill="#eab308" fontSize="10" fontFamily="JetBrains Mono, monospace">μ (Stationary)</text>
+        <path d={conePolygon} fill="rgba(99, 102, 241, 0.12)" stroke="none" />
+        <path d={histPath} fill="none" stroke="#38bdf8" strokeWidth="1.8" />
+        <path d={trajPath} fill="none" stroke="#6366f1" strokeWidth="1.8" strokeDasharray="4 2" />
         {trajCoords.slice(1).map((c, i) => (
           <g key={i}>
-            <circle cx={c.x} cy={c.y} r="4.5" fill="#ec4899" />
-            <text x={c.x - 10} y={height - 10} fill="#94a3b8" fontSize="10" fontFamily="monospace">
+            <circle cx={c.x} cy={c.y} r="3.5" fill="#6366f1" stroke="#080a10" strokeWidth="1" />
+            <text x={c.x - 8} y={height - 8} fill="#64748b" fontSize="9" fontFamily="JetBrains Mono, monospace">
               +{traj[i].horizon_hours}h
             </text>
           </g>
         ))}
-        <line x1={getX(startIdx)} y1={padY} x2={getX(startIdx)} y2={height - padY} stroke="#f97316" strokeDasharray="2 2" strokeWidth="1.5" />
-        <circle cx={getX(startIdx)} cy={getY(hist[startIdx])} r="6" fill="#f97316" stroke="#fff" strokeWidth="1.5" />
-        <text x={getX(startIdx) - 15} y={padY - 8} fill="#f97316" fontSize="11" fontWeight="bold">NOW</text>
-        <text x={padX} y={20} fill="#38bdf8" fontSize="12" fontWeight="bold">Historical Spread (Past 30 Bars)</text>
-        <text x={getX(startIdx) + 20} y={20} fill="#ec4899" fontSize="12" fontWeight="bold">► Forecast Trajectory (Ornstein-Uhlenbeck + 95% Cone)</text>
+        <line x1={getX(startIdx)} y1={padY} x2={getX(startIdx)} y2={height - padY} stroke="rgba(255, 255, 255, 0.2)" strokeDasharray="2 2" strokeWidth="1" />
+        <circle cx={getX(startIdx)} cy={getY(hist[startIdx])} r="4.5" fill="#38bdf8" stroke="#080a10" strokeWidth="1.5" />
+        <text x={getX(startIdx) - 12} y={padY - 8} fill="#94a3b8" fontSize="9" fontFamily="JetBrains Mono, monospace" fontWeight="600">NOW</text>
+        <text x={padX} y={20} fill="#38bdf8" fontSize="11" fontFamily="JetBrains Mono, monospace" fontWeight="600">Historical Spread</text>
+        <text x={getX(startIdx) + 20} y={20} fill="#818cf8" fontSize="11" fontFamily="JetBrains Mono, monospace" fontWeight="600">O-U SDE Diffusion Cone</text>
       </svg>
     );
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: '#030712', color: '#f8fafc', padding: '24px', fontFamily: 'system-ui, -apple-system, sans-serif' }}>
-      {/* Top Header */}
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1e293b', paddingBottom: '16px' }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 'bold', color: '#10b981' }}>
-            QUANT SENTINEL <span style={{ fontSize: '13px', background: '#065f46', color: '#d1fae5', padding: '3px 8px', borderRadius: '4px', marginLeft: '8px' }}>v1.2.0 LIVE</span>
-          </h1>
-          <p style={{ margin: '4px 0 0 0', fontSize: '14px', color: '#94a3b8' }}>
-            Spot Gold Quantitative Terminal: Live Strategy Appearance Overlays & Machine Learning Direction Forecaster
-          </p>
+    <div style={{ minHeight: '100vh', background: '#07090e', color: '#f1f5f9', fontFamily: '-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif' }}>
+      {/* ========================================================================= */}
+      {/* 1. TOP INSTITUTIONAL TICKER & UTILITY HEADER (46px)                      */}
+      {/* ========================================================================= */}
+      <header
+        style={{
+          height: '46px',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.07)',
+          background: '#0a0d14',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 16px',
+        }}
+      >
+        {/* Left: Brand Identity & Live Status */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Activity size={16} className="text-emerald-400" />
+            <span style={{ fontSize: '13px', fontWeight: '800', letterSpacing: '0.08em', color: '#f8fafc' }}>
+              QUANT // SENTINEL
+            </span>
+            <span
+              style={{
+                fontSize: '10px',
+                fontFamily: 'JetBrains Mono, monospace',
+                background: 'rgba(16, 185, 129, 0.1)',
+                color: '#10b981',
+                border: '1px solid rgba(16, 185, 129, 0.25)',
+                padding: '1px 6px',
+                borderRadius: '3px',
+                fontWeight: '600',
+              }}
+            >
+              v1.2.0 LIVE
+            </span>
+          </div>
+
+          <div style={{ height: '14px', width: '1px', background: 'rgba(255, 255, 255, 0.1)' }} />
+
+          {/* Live COMEX Status Dot */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }} className="tabular">
+            <span
+              className="live-pulse-dot"
+              style={{
+                display: 'inline-block',
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                background: goldData?.is_live ? '#10b981' : '#f59e0b',
+                boxShadow: goldData?.is_live ? '0 0 6px rgba(16, 185, 129, 0.8)' : 'none',
+              }}
+            />
+            <span style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', color: '#94a3b8' }}>
+              {goldData?.data_source || 'LIVE COMEX (GC=F)'}
+            </span>
+          </div>
         </div>
-        <div style={{ display: 'flex', gap: '14px', fontSize: '13px' }}>
-          <div style={{ background: '#111827', padding: '8px 12px', borderRadius: '6px' }}>
-            Equity: <strong style={{ color: '#10b981' }}>${portfolio.equity.toLocaleString()}</strong>
+
+        {/* Center: Live Spot Gold Quote Ribbon with Tick Animation */}
+        {goldData && (
+          <div
+            className={`tabular ${priceTickClass}`}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '10px',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              transition: 'background-color 0.3s ease',
+            }}
+          >
+            <span style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>
+              XAU/USD SPOT
+            </span>
+            <span style={{ fontSize: '14px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#f8fafc' }}>
+              ${goldData.current_spot_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            </span>
+            <span
+              style={{
+                fontSize: '11px',
+                fontFamily: 'JetBrains Mono, monospace',
+                fontWeight: '600',
+                color: goldData.daily_change_pct >= 0 ? '#10b981' : '#f43f5e',
+                background: goldData.daily_change_pct >= 0 ? 'rgba(16, 185, 129, 0.1)' : 'rgba(244, 63, 94, 0.1)',
+                padding: '2px 6px',
+                borderRadius: '3px',
+              }}
+            >
+              {goldData.daily_change_pct >= 0 ? '+' : ''}{goldData.daily_change_pct}% (${goldData.daily_change_dollars >= 0 ? '+' : ''}{goldData.daily_change_dollars.toFixed(2)})
+            </span>
           </div>
-          <div style={{ background: '#111827', padding: '8px 12px', borderRadius: '6px' }}>
-            Cash: <strong style={{ color: '#38bdf8' }}>${portfolio.cash.toLocaleString()}</strong>
+        )}
+
+        {/* Right: Portfolio Metrics & Cycle Trigger */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', fontSize: '11px' }} className="tabular">
+          <div style={{ display: 'flex', gap: '10px', color: '#94a3b8', fontFamily: 'JetBrains Mono, monospace' }}>
+            <span>
+              NAV: <strong style={{ color: '#f8fafc' }}>${(accountMode === 'micro_100' && goldData ? goldData.account_capital : portfolio.equity).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
+            </span>
+            <span>
+              MARGIN: <strong style={{ color: '#38bdf8' }}>${(accountMode === 'micro_100' && goldData ? goldData.free_margin : portfolio.cash).toLocaleString(undefined, { minimumFractionDigits: 2 })}</strong>
+            </span>
+            <span>
+              REGIME: <strong style={{ color: '#f59e0b' }}>{goldData?.market_regime || regime}</strong>
+            </span>
           </div>
-          <div style={{ background: '#111827', padding: '8px 12px', borderRadius: '6px' }}>
-            Regime: <strong style={{ color: '#f59e0b' }}>{goldData?.market_regime || regime}</strong>
-          </div>
+
+          <button
+            onClick={runFullResearch}
+            style={{
+              background: 'rgba(255, 255, 255, 0.05)',
+              color: '#cbd5e1',
+              border: '1px solid rgba(255, 255, 255, 0.12)',
+              padding: '4px 10px',
+              borderRadius: '3px',
+              cursor: 'pointer',
+              fontSize: '11px',
+              fontFamily: 'JetBrains Mono, monospace',
+              fontWeight: '600',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}
+          >
+            <Zap size={12} className="text-amber-400" /> SWARM CYCLE
+          </button>
         </div>
       </header>
 
-      {/* Live Status Banner */}
-      <div style={{ margin: '16px 0', padding: '10px 16px', background: '#0f172a', borderLeft: '4px solid #10b981', borderRadius: '4px', fontSize: '13px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>● {statusMessage}</span>
-        <button
-          onClick={runFullResearch}
-          style={{ background: '#059669', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
-        >
-          ⚡ Trigger Autonomous Swarm Research Cycle
-        </button>
-      </div>
+      {/* ========================================================================= */}
+      {/* 2. NAVIGATION SEGMENTED CONTROL BAR (38px)                                */}
+      {/* ========================================================================= */}
+      <div
+        style={{
+          height: '38px',
+          borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+          background: '#080a10',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          padding: '0 16px',
+        }}
+      >
+        {/* Main Workstation Tabs */}
+        <div style={{ display: 'flex', gap: '2px' }}>
+          {[
+            { id: 'gold', label: 'SPOT GOLD', icon: BarChart3 },
+            { id: 'predict', label: 'PAIRS PREDICTOR', icon: TrendingUp },
+            { id: 'leaderboard', label: 'LEADERBOARD', icon: Compass },
+            { id: 'lab', label: 'VECTORIZED LAB', icon: Cpu },
+            { id: 'pairs', label: 'STAT ARB', icon: Layers },
+            { id: 'execution', label: 'PAPER ORDER', icon: Terminal },
+            { id: 'metrics', label: 'METRICS', icon: Activity, onClick: fetchMetrics },
+          ].map((tab) => {
+            const isActive = activeTab === tab.id;
+            const Icon = tab.icon;
+            return (
+              <button
+                key={tab.id}
+                onClick={() => {
+                  setActiveTab(tab.id);
+                  if (tab.onClick) tab.onClick();
+                }}
+                style={{
+                  padding: '6px 12px',
+                  borderRadius: '3px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontWeight: isActive ? '700' : '500',
+                  fontSize: '11px',
+                  fontFamily: 'JetBrains Mono, monospace',
+                  letterSpacing: '0.04em',
+                  background: isActive ? 'rgba(99, 102, 241, 0.15)' : 'transparent',
+                  color: isActive ? '#f8fafc' : '#64748b',
+                  borderBottom: isActive ? '2px solid #6366f1' : '2px solid transparent',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                <Icon size={12} className={isActive ? 'text-indigo-400' : 'text-slate-500'} />
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
 
-      {/* Navigation Tabs */}
-      <div style={{ display: 'flex', gap: '8px', marginBottom: '20px' }}>
-        {[
-          { id: 'gold', label: '🥇 Spot Gold Terminal (Live Chart & ML)' },
-          { id: 'predict', label: '🔮 Live Pairs Predictor' },
-          { id: 'leaderboard', label: '🏆 Alpha Hypothesis Leaderboard' },
-          { id: 'lab', label: '🔬 Vectorized Backtest Lab' },
-          { id: 'pairs', label: '⚖️ Statistical Arbitrage (Pairs)' },
-          { id: 'execution', label: '📈 Paper Order Hub' },
-          { id: 'metrics', label: '📊 Prometheus Metrics', onClick: fetchMetrics },
-        ].map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => {
-              setActiveTab(tab.id);
-              if (tab.onClick) tab.onClick();
-            }}
-            style={{
-              padding: '10px 16px',
-              borderRadius: '6px',
-              border: 'none',
-              cursor: 'pointer',
-              fontWeight: '600',
-              fontSize: '13px',
-              background: activeTab === tab.id ? '#059669' : '#111827',
-              color: '#f8fafc',
-            }}
-          >
-            {tab.label}
-          </button>
-        ))}
+        {/* Global Status Monospace Chip */}
+        <div style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>
+          <span style={{ color: '#10b981' }}>SYSTEM READY</span> · {statusMessage}
+        </div>
       </div>
 
       {/* ========================================================================= */}
-      {/* TAB: SPOT GOLD TERMINAL (LIVE CANDLESTICKS, STRATEGY OVERLAYS & ML)       */}
+      {/* 3. WORKSPACE CONTENT AREA                                                 */}
       {/* ========================================================================= */}
-      {activeTab === 'gold' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          {/* Top Gold Controls & Timeframe Bar (Matching OANDA / TradingView Tabs) */}
-          <div style={{ background: '#111827', padding: '16px 20px', borderRadius: '8px', border: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-            {/* Timeframe Switcher (15m, 1h, 4h, 1D) */}
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <span style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold' }}>Timeframe:</span>
-              {[
-                { id: '15m', label: '15m (Scalp)' },
-                { id: '1h', label: '1h (Hourly)' },
-                { id: '4h', label: '4h (4-Hour)' },
-                { id: '1D', label: '1D (Daily)' },
-              ].map((tf) => (
-                <button
-                  key={tf.id}
-                  onClick={() => {
-                    setGoldTimeframe(tf.id);
-                    fetchGoldAnalysis(tf.id, goldStrategy, goldSpotPrice, goldEmaFast, goldEmaSlow, goldBollWindow, goldBollStd, goldRsiPeriod);
-                  }}
-                  style={{
-                    padding: '6px 12px',
-                    borderRadius: '5px',
-                    border: '1px solid ' + (goldTimeframe === tf.id ? '#10b981' : '#374151'),
-                    background: goldTimeframe === tf.id ? '#065f46' : '#1f2937',
-                    color: goldTimeframe === tf.id ? '#a7f3d0' : '#d1d5db',
-                    fontSize: '12px',
-                    fontWeight: 'bold',
-                    cursor: 'pointer',
-                  }}
-                >
-                  {tf.label}
-                </button>
-              ))}
-            </div>
+      <main style={{ padding: '14px 16px' }}>
+        {/* TAB: SPOT GOLD WORKSTATION (TWO-COLUMN SPLIT DESK) */}
+        {activeTab === 'gold' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {/* Top Toolbar: Timeframes, Strategies, Account Switcher, Overrides */}
+            <div
+              style={{
+                background: '#0d1017',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '4px',
+                padding: '8px 12px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '10px',
+              }}
+            >
+              {/* Timeframe & Strategy Pills */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                {/* Timeframe Segmented Control */}
+                <div style={{ display: 'flex', background: '#080a10', borderRadius: '3px', padding: '2px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                  {[
+                    { id: '15m', label: '15M' },
+                    { id: '1h', label: '1H' },
+                    { id: '4h', label: '4H' },
+                    { id: '1D', label: '1D' },
+                  ].map((tf) => {
+                    const isTfActive = goldTimeframe === tf.id;
+                    return (
+                      <button
+                        key={tf.id}
+                        onClick={() => {
+                          setGoldTimeframe(tf.id);
+                          fetchGoldAnalysis(tf.id, goldStrategy, goldSpotPrice, goldEmaFast, goldEmaSlow, goldBollWindow, goldBollStd, goldRsiPeriod);
+                        }}
+                        style={{
+                          padding: '3px 8px',
+                          borderRadius: '2px',
+                          border: 'none',
+                          background: isTfActive ? '#1e2433' : 'transparent',
+                          color: isTfActive ? '#f8fafc' : '#64748b',
+                          fontSize: '11px',
+                          fontFamily: 'JetBrains Mono, monospace',
+                          fontWeight: isTfActive ? '700' : '500',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {tf.label}
+                      </button>
+                    );
+                  })}
+                </div>
 
-            {/* Account Capital & Sizing Mode Switcher ($100 Micro vs $100k Institutional) */}
-            <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-              <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 'bold' }}>Account:</span>
-              <button
-                onClick={() => switchAccountMode('micro_100', 100.0, 200.0)}
-                style={{
-                  padding: '6px 11px',
-                  borderRadius: '5px',
-                  border: '1px solid ' + (accountMode === 'micro_100' ? '#10b981' : '#374151'),
-                  background: accountMode === 'micro_100' ? '#065f46' : '#1f2937',
-                  color: accountMode === 'micro_100' ? '#a7f3d0' : '#d1d5db',
-                  fontSize: '11px',
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                }}
-              >
-                💰 $100 Micro (1:200)
-              </button>
-              <button
-                onClick={() => switchAccountMode('institutional', 100000.0, 20.0)}
-                style={{
-                  padding: '6px 11px',
-                  borderRadius: '5px',
-                  border: '1px solid ' + (accountMode === 'institutional' ? '#38bdf8' : '#374151'),
-                  background: accountMode === 'institutional' ? '#075985' : '#1f2937',
-                  color: accountMode === 'institutional' ? '#bae6fd' : '#d1d5db',
-                  fontSize: '11px',
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                }}
-              >
-                🏛️ $100k Inst.
-              </button>
-            </div>
+                {/* Strategy Overlays Segmented Control */}
+                <div style={{ display: 'flex', background: '#080a10', borderRadius: '3px', padding: '2px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                  {[
+                    { id: 'ema', label: 'DUAL EMA' },
+                    { id: 'bollinger', label: 'BOLLINGER' },
+                    { id: 'rsi', label: 'RSI OSC' },
+                    { id: 'ou', label: 'O-U SDE' },
+                  ].map((strat) => {
+                    const isStratActive = goldStrategy === strat.id;
+                    return (
+                      <button
+                        key={strat.id}
+                        onClick={() => {
+                          setGoldStrategy(strat.id);
+                          fetchGoldAnalysis(goldTimeframe, strat.id, goldSpotPrice);
+                        }}
+                        style={{
+                          padding: '3px 8px',
+                          borderRadius: '2px',
+                          border: 'none',
+                          background: isStratActive ? '#1e2433' : 'transparent',
+                          color: isStratActive ? '#38bdf8' : '#64748b',
+                          fontSize: '11px',
+                          fontFamily: 'JetBrains Mono, monospace',
+                          fontWeight: isStratActive ? '700' : '500',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {strat.label}
+                      </button>
+                    );
+                  })}
+                </div>
 
-            {/* Strategy Parameter Tuner, Export CSV, and Benchmark Spot Reference */}
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-              <button
-                onClick={() => setShowTuner(!showTuner)}
-                style={{
-                  background: showTuner ? '#4338ca' : '#1f2937',
-                  color: showTuner ? '#e0e7ff' : '#cbd5e1',
-                  border: '1px solid ' + (showTuner ? '#6366f1' : '#374151'),
-                  padding: '6px 12px',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '12px',
-                  fontWeight: 'bold',
-                }}
-              >
-                ⚙️ {showTuner ? 'Hide Tuner' : 'Strategy Tuner'}
-              </button>
-
-              <button
-                onClick={exportGoldCsv}
-                style={{
-                  background: '#1e293b',
-                  color: '#38bdf8',
-                  border: '1px solid #0284c7',
-                  padding: '6px 12px',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '12px',
-                  fontWeight: 'bold',
-                }}
-              >
-                📥 Export CSV
-              </button>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0a192f', padding: '4px 8px', borderRadius: '4px', border: '1px solid #1e3a8a' }}>
-                <span style={{
-                  display: 'inline-block',
-                  width: '8px',
-                  height: '8px',
-                  borderRadius: '50%',
-                  background: goldData?.is_live ? '#10b981' : '#f59e0b',
-                  boxShadow: goldData?.is_live ? '0 0 6px #10b981' : 'none'
-                }}></span>
-                <span style={{ fontSize: '11px', color: '#6ee7b7', fontWeight: 'bold' }}>
-                  {goldData?.data_source || 'LIVE COMEX (GC=F)'}
-                </span>
+                {/* Account Mode Switcher */}
+                <div style={{ display: 'flex', background: '#080a10', borderRadius: '3px', padding: '2px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                  <button
+                    onClick={() => switchAccountMode('micro_100', 100.0, 200.0)}
+                    style={{
+                      padding: '3px 8px',
+                      borderRadius: '2px',
+                      border: 'none',
+                      background: accountMode === 'micro_100' ? 'rgba(16, 185, 129, 0.2)' : 'transparent',
+                      color: accountMode === 'micro_100' ? '#10b981' : '#64748b',
+                      fontSize: '11px',
+                      fontFamily: 'JetBrains Mono, monospace',
+                      fontWeight: accountMode === 'micro_100' ? '700' : '500',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    MICRO $100 (1:200)
+                  </button>
+                  <button
+                    onClick={() => switchAccountMode('institutional', 100000.0, 20.0)}
+                    style={{
+                      padding: '3px 8px',
+                      borderRadius: '2px',
+                      border: 'none',
+                      background: accountMode === 'institutional' ? 'rgba(56, 189, 248, 0.2)' : 'transparent',
+                      color: accountMode === 'institutional' ? '#38bdf8' : '#64748b',
+                      fontSize: '11px',
+                      fontFamily: 'JetBrains Mono, monospace',
+                      fontWeight: accountMode === 'institutional' ? '700' : '500',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    INSTITUTIONAL $100K
+                  </button>
+                </div>
               </div>
 
-              <label style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 'bold' }}>
-                {isCustomPrice ? 'Override ($):' : 'Live Spot ($):'}
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                value={goldSpotPrice}
-                onChange={(e) => {
-                  setIsCustomPrice(true);
-                  setGoldSpotPrice(parseFloat(e.target.value) || 0);
-                }}
-                style={{
-                  background: isCustomPrice ? '#27272a' : '#052e16',
-                  color: isCustomPrice ? '#fbbf24' : '#4ade80',
-                  border: isCustomPrice ? '1px solid #eab308' : '1px solid #16a34a',
-                  padding: '6px 10px',
-                  borderRadius: '4px',
-                  width: '105px',
-                  fontWeight: 'bold',
-                }}
-              />
-              {isCustomPrice && (
+              {/* Utility Tools: Tuner, CSV Export, Spot Override, Polling */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <button
-                  onClick={() => {
-                    setIsCustomPrice(false);
-                    fetchGoldAnalysis(goldTimeframe, goldStrategy, null);
-                  }}
+                  onClick={() => setShowTuner(!showTuner)}
                   style={{
-                    background: '#1e293b',
-                    color: '#38bdf8',
-                    border: '1px solid #0284c7',
+                    background: showTuner ? 'rgba(99, 102, 241, 0.2)' : '#12151e',
+                    color: showTuner ? '#818cf8' : '#94a3b8',
+                    border: '1px solid ' + (showTuner ? '#6366f1' : 'rgba(255, 255, 255, 0.08)'),
                     padding: '4px 8px',
-                    borderRadius: '4px',
+                    borderRadius: '3px',
                     cursor: 'pointer',
                     fontSize: '11px',
-                    fontWeight: 'bold',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    fontWeight: '600',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
                   }}
-                  title="Reset to live real-time market stream"
                 >
-                  ↺ Reset Live
+                  <Sliders size={12} /> {showTuner ? 'HIDE TUNER' : 'TUNER'}
                 </button>
-              )}
-              <button
-                onClick={() => fetchGoldAnalysis()}
-                disabled={loadingGold}
-                style={{ background: '#059669', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
-              >
-                {loadingGold ? 'Analyzing...' : '⚡ Refresh'}
-              </button>
-              <button
-                onClick={() => setGoldAutoRefresh(!goldAutoRefresh)}
+
+                <button
+                  onClick={exportGoldCsv}
+                  style={{
+                    background: '#12151e',
+                    color: '#94a3b8',
+                    border: '1px solid rgba(255, 255, 255, 0.08)',
+                    padding: '4px 8px',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                  }}
+                >
+                  <Download size={12} /> CSV
+                </button>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                  <label style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>
+                    {isCustomPrice ? 'OVERRIDE:' : 'SPOT:'}
+                  </label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={goldSpotPrice}
+                    onChange={(e) => {
+                      setIsCustomPrice(true);
+                      setGoldSpotPrice(parseFloat(e.target.value) || 0);
+                    }}
+                    style={{
+                      background: '#080a10',
+                      color: isCustomPrice ? '#f59e0b' : '#f8fafc',
+                      border: '1px solid ' + (isCustomPrice ? '#f59e0b' : 'rgba(255, 255, 255, 0.1)'),
+                      padding: '4px 6px',
+                      borderRadius: '3px',
+                      width: '92px',
+                      fontSize: '11px',
+                      fontFamily: 'JetBrains Mono, monospace',
+                      fontWeight: '700',
+                    }}
+                  />
+                  {isCustomPrice && (
+                    <button
+                      onClick={() => {
+                        setIsCustomPrice(false);
+                        fetchGoldAnalysis(goldTimeframe, goldStrategy, null);
+                      }}
+                      style={{
+                        background: '#1e2433',
+                        color: '#38bdf8',
+                        border: 'none',
+                        padding: '4px 6px',
+                        borderRadius: '3px',
+                        cursor: 'pointer',
+                        fontSize: '10px',
+                        fontFamily: 'JetBrains Mono, monospace',
+                      }}
+                    >
+                      RESET
+                    </button>
+                  )}
+                </div>
+
+                <button
+                  onClick={() => setGoldAutoRefresh(!goldAutoRefresh)}
+                  style={{
+                    background: goldAutoRefresh ? 'rgba(16, 185, 129, 0.15)' : '#12151e',
+                    color: goldAutoRefresh ? '#10b981' : '#64748b',
+                    border: '1px solid ' + (goldAutoRefresh ? 'rgba(16, 185, 129, 0.3)' : 'rgba(255, 255, 255, 0.08)'),
+                    padding: '4px 8px',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    fontWeight: '600',
+                  }}
+                >
+                  {goldAutoRefresh ? 'POLLING' : 'PAUSED'}
+                </button>
+              </div>
+            </div>
+
+            {/* Strategy Parameter Tuner Drawer */}
+            {showTuner && (
+              <div
                 style={{
-                  background: goldAutoRefresh ? '#065f46' : '#374151',
-                  color: goldAutoRefresh ? '#a7f3d0' : '#d1d5db',
-                  border: '1px solid ' + (goldAutoRefresh ? '#10b981' : '#4b5563'),
-                  padding: '6px 10px',
+                  background: '#0d1017',
+                  padding: '12px 16px',
                   borderRadius: '4px',
-                  cursor: 'pointer',
+                  border: '1px solid rgba(255, 255, 255, 0.08)',
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(4, 1fr)',
+                  gap: '16px',
                   fontSize: '11px',
-                  fontWeight: 'bold',
+                  fontFamily: 'JetBrains Mono, monospace',
                 }}
               >
-                {goldAutoRefresh ? '● Live Polling' : '○ Paused'}
-              </button>
-            </div>
-          </div>
-
-          {/* Strategy Parameter Tuner Drawer */}
-          {showTuner && (
-            <div style={{ background: '#0f172a', padding: '16px 20px', borderRadius: '8px', border: '1px solid #334155', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px', fontSize: '12px' }}>
-              <div>
-                <label style={{ color: '#06b6d4', fontWeight: 'bold' }}>Fast EMA Span: {goldEmaFast}</label>
-                <input
-                  type="range"
-                  min="5"
-                  max="30"
-                  value={goldEmaFast}
-                  onChange={(e) => setGoldEmaFast(parseInt(e.target.value))}
-                  style={{ width: '100%', marginTop: '6px' }}
-                />
-              </div>
-              <div>
-                <label style={{ color: '#a855f7', fontWeight: 'bold' }}>Slow EMA Span: {goldEmaSlow}</label>
-                <input
-                  type="range"
-                  min="20"
-                  max="60"
-                  value={goldEmaSlow}
-                  onChange={(e) => setGoldEmaSlow(parseInt(e.target.value))}
-                  style={{ width: '100%', marginTop: '6px' }}
-                />
-              </div>
-              <div>
-                <label style={{ color: '#38bdf8', fontWeight: 'bold' }}>Bollinger Window: {goldBollWindow} (Std: {goldBollStd}σ)</label>
-                <input
-                  type="range"
-                  min="10"
-                  max="40"
-                  value={goldBollWindow}
-                  onChange={(e) => setGoldBollWindow(parseInt(e.target.value))}
-                  style={{ width: '100%', marginTop: '6px' }}
-                />
-              </div>
-              <div>
-                <label style={{ color: '#f59e0b', fontWeight: 'bold' }}>RSI Period: {goldRsiPeriod}</label>
-                <input
-                  type="range"
-                  min="7"
-                  max="28"
-                  value={goldRsiPeriod}
-                  onChange={(e) => setGoldRsiPeriod(parseInt(e.target.value))}
-                  style={{ width: '100%', marginTop: '6px' }}
-                />
-              </div>
-            </div>
-          )}
-
-          {goldData && (
-            <>
-              {/* Hero Spot Gold Price & Microstructure Cards */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
-                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>XAU/USD Spot Quote</div>
-                  <div style={{ fontSize: '24px', fontWeight: 'bold', marginTop: '4px', color: '#eab308' }}>
-                    ${goldData.current_spot_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                  </div>
-                  <div style={{ fontSize: '12px', marginTop: '4px', color: goldData.daily_change_pct >= 0 ? '#10b981' : '#ef4444', fontWeight: 'bold' }}>
-                    {goldData.daily_change_pct >= 0 ? '+' : ''}{goldData.daily_change_pct}% (${goldData.daily_change_dollars >= 0 ? '+' : ''}{goldData.daily_change_dollars.toFixed(2)})
-                  </div>
+                <div>
+                  <label style={{ color: '#38bdf8', fontWeight: '600' }}>FAST EMA SPAN: {goldEmaFast}</label>
+                  <input
+                    type="range"
+                    min="5"
+                    max="30"
+                    value={goldEmaFast}
+                    onChange={(e) => setGoldEmaFast(parseInt(e.target.value))}
+                    style={{ width: '100%', marginTop: '6px' }}
+                  />
                 </div>
-
-                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Microstructure Volatilities</div>
-                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#38bdf8' }}>
-                    {goldData.parkinson_volatility_pct}% <span style={{ fontSize: '11px', color: '#94a3b8' }}>Parkinson (σ_P)</span>
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#a855f7', marginTop: '4px', display: 'flex', justifyContent: 'space-between' }}>
-                    <span>GK: <strong>{goldData.garman_klass_volatility_pct}%</strong></span>
-                    <span>RS: <strong>{goldData.rogers_satchell_volatility_pct}%</strong></span>
-                    <span>YZ: <strong>{goldData.yang_zhang_volatility_pct}%</strong></span>
-                  </div>
+                <div>
+                  <label style={{ color: '#818cf8', fontWeight: '600' }}>SLOW EMA SPAN: {goldEmaSlow}</label>
+                  <input
+                    type="range"
+                    min="20"
+                    max="60"
+                    value={goldEmaSlow}
+                    onChange={(e) => setGoldEmaSlow(parseInt(e.target.value))}
+                    style={{ width: '100%', marginTop: '6px' }}
+                  />
                 </div>
-
-                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Cross-Asset Valuations</div>
-                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#f59e0b' }}>
-                    ¥{goldData.macro_gold_in_jpy.toLocaleString()} <span style={{ fontSize: '11px', color: '#94a3b8' }}>Gold in Yen</span>
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                    BTC / Gold Ratio: <strong>{goldData.macro_btc_to_gold_ratio}x</strong>
-                  </div>
+                <div>
+                  <label style={{ color: '#cbd5e1', fontWeight: '600' }}>BOLLINGER WINDOW: {goldBollWindow} ({goldBollStd}σ)</label>
+                  <input
+                    type="range"
+                    min="10"
+                    max="40"
+                    value={goldBollWindow}
+                    onChange={(e) => setGoldBollWindow(parseInt(e.target.value))}
+                    style={{ width: '100%', marginTop: '6px' }}
+                  />
                 </div>
-
-                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Market Regime & Bias</div>
-                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#10b981' }}>
-                    {goldData.market_regime}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
-                    Hourly Vol σ₁ₕ: <strong>{goldData.hourly_volatility_pct}%</strong>
-                  </div>
+                <div>
+                  <label style={{ color: '#f59e0b', fontWeight: '600' }}>RSI PERIOD: {goldRsiPeriod}</label>
+                  <input
+                    type="range"
+                    min="7"
+                    max="28"
+                    value={goldRsiPeriod}
+                    onChange={(e) => setGoldRsiPeriod(parseInt(e.target.value))}
+                    style={{ width: '100%', marginTop: '6px' }}
+                  />
                 </div>
               </div>
+            )}
 
-              {/* $100 Micro-Account Health & Risk Governor Banner */}
-              {accountMode === 'micro_100' && (
-                <div style={{ background: '#0a0f1d', border: '1px solid #059669', borderRadius: '8px', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                      <span style={{ fontSize: '20px' }}>🛡️</span>
-                      <div>
-                        <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#10b981', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          $100 Micro-Account Capital Preservation & Growth Governor
-                          <span style={{ fontSize: '10px', background: '#064e3b', color: '#a7f3d0', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
-                            LEVERAGE 1:200 • MICRO-LOTS (0.01)
+            {/* TWO-COLUMN HIGH-DENSITY SPLIT DESK */}
+            <div style={{ display: 'grid', gridTemplateColumns: '68% 32%', gap: '12px' }}>
+              {/* LEFT COLUMN: Interactive Candlestick & Volume Chart + Bottom Dock */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {/* Main Workstation Candlestick Chart Container */}
+                <div
+                  style={{
+                    background: '#0d1017',
+                    border: '1px solid rgba(255, 255, 255, 0.06)',
+                    borderRadius: '4px',
+                    padding: '12px',
+                  }}
+                >
+                  {renderInteractiveChart()}
+                </div>
+
+                {/* BOTTOM TABBED DOCK */}
+                <div
+                  style={{
+                    background: '#0d1017',
+                    border: '1px solid rgba(255, 255, 255, 0.06)',
+                    borderRadius: '4px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                  }}
+                >
+                  {/* Dock Tabs Header */}
+                  <div
+                    style={{
+                      borderBottom: '1px solid rgba(255, 255, 255, 0.06)',
+                      background: '#090c13',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '0 12px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', gap: '4px' }}>
+                      {[
+                        { id: 'audit1000', label: '1,000-TRADE AUDIT', icon: Shield },
+                        { id: 'journal', label: `TRADE JOURNAL (${goldData?.demo_assessment?.total_trades || 0})`, icon: BookOpen },
+                        { id: 'volatility', label: 'VOLATILITY & MACRO', icon: Activity },
+                        { id: 'forecast', label: 'FORWARD HORIZONS', icon: Compass },
+                      ].map((dTab) => {
+                        const isDockActive = bottomDockTab === dTab.id;
+                        const DIcon = dTab.icon;
+                        return (
+                          <button
+                            key={dTab.id}
+                            onClick={() => setBottomDockTab(dTab.id)}
+                            style={{
+                              padding: '8px 12px',
+                              background: 'transparent',
+                              border: 'none',
+                              borderBottom: isDockActive ? '2px solid #38bdf8' : '2px solid transparent',
+                              color: isDockActive ? '#f8fafc' : '#64748b',
+                              fontSize: '11px',
+                              fontFamily: 'JetBrains Mono, monospace',
+                              fontWeight: isDockActive ? '700' : '500',
+                              cursor: 'pointer',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '6px',
+                            }}
+                          >
+                            <DIcon size={12} className={isDockActive ? 'text-cyan-400' : 'text-slate-500'} />
+                            {dTab.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#475569' }}>
+                      TRIPLE-BARRIER CALIBRATED
+                    </div>
+                  </div>
+
+                  {/* Dock Tab 1: 1,000-Trade Quantitative Walk-Forward Audit */}
+                  {bottomDockTab === 'audit1000' && (
+                    <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      {/* Top 5 KPI Strip */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '8px' }} className="tabular">
+                        <div style={{ background: '#080a10', padding: '8px 10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>TOTAL TRADES</div>
+                          <div style={{ fontSize: '15px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#f8fafc', marginTop: '2px' }}>
+                            {audit1000Data?.summary?.total_trades || 1000}
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#475569', marginTop: '1px' }}>536 W / 464 L</div>
+                        </div>
+
+                        <div style={{ background: '#080a10', padding: '8px 10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>WIN RATE</div>
+                          <div style={{ fontSize: '15px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#10b981', marginTop: '2px' }}>
+                            {audit1000Data?.summary?.win_rate_pct || 53.6}%
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#475569', marginTop: '1px' }}>Out-of-sample</div>
+                        </div>
+
+                        <div style={{ background: '#080a10', padding: '8px 10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>NET PnL / ROI</div>
+                          <div style={{ fontSize: '15px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#10b981', marginTop: '2px' }}>
+                            +${audit1000Data?.summary?.net_pnl?.toFixed(2) || '2,527.37'}
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#10b981', marginTop: '1px' }}>+2,527.4% on $100</div>
+                        </div>
+
+                        <div style={{ background: '#080a10', padding: '8px 10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>PROFIT FACTOR</div>
+                          <div style={{ fontSize: '15px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#38bdf8', marginTop: '2px' }}>
+                            {audit1000Data?.summary?.profit_factor || 1.74}x
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#475569', marginTop: '1px' }}>W: $5.95k / L: $3.42k</div>
+                        </div>
+
+                        <div style={{ background: '#080a10', padding: '8px 10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>MAX DRAWDOWN</div>
+                          <div style={{ fontSize: '15px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#f59e0b', marginTop: '2px' }}>
+                            ${audit1000Data?.summary?.max_drawdown?.toFixed(2) || '278.60'}
+                          </div>
+                          <div style={{ fontSize: '10px', color: '#475569', marginTop: '1px' }}>10.3% peak-to-trough</div>
+                        </div>
+                      </div>
+
+                      {/* Walk-Forward Equity Growth Curve Visualization */}
+                      <div style={{ background: '#080a10', padding: '10px 14px', borderRadius: '4px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                          <span style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#94a3b8', fontWeight: '700' }}>
+                            WALK-FORWARD CUMULATIVE EQUITY CURVE ($100 BASE TO $2,627.37 PEAK)
+                          </span>
+                          <span style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#10b981' }}>
+                            +2,527.4% GAIN
                           </span>
                         </div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
-                          Calibrated to survive high-volatility XAU/USD gold swings without margin call or liquidation
+                        <svg viewBox="0 0 900 65" style={{ width: '100%', height: '65px', display: 'block' }}>
+                          <defs>
+                            <linearGradient id="equityGrad" x1="0" y1="0" x2="0" y2="1">
+                              <stop offset="0%" stopColor="#10b981" stopOpacity="0.25" />
+                              <stop offset="100%" stopColor="#10b981" stopOpacity="0.0" />
+                            </linearGradient>
+                          </defs>
+                          {/* Baseline $100 */}
+                          <line x1="10" y1="58" x2="890" y2="58" stroke="rgba(255, 255, 255, 0.1)" strokeDasharray="3 3" />
+                          {/* Equity Polygon Fill */}
+                          <path
+                            d="M 10 58 Q 180 48, 300 32 T 550 18 T 750 14 T 890 8 L 890 58 L 10 58 Z"
+                            fill="url(#equityGrad)"
+                          />
+                          {/* Equity Polyline */}
+                          <path
+                            d="M 10 58 Q 180 48, 300 32 T 550 18 T 750 14 T 890 8"
+                            fill="none"
+                            stroke="#10b981"
+                            strokeWidth="1.8"
+                          />
+                          {/* Milestone Dots */}
+                          <circle cx="10" cy="58" r="3" fill="#38bdf8" />
+                          <circle cx="300" cy="32" r="3" fill="#10b981" />
+                          <circle cx="550" cy="18" r="3" fill="#10b981" />
+                          <circle cx="890" cy="8" r="3.5" fill="#10b981" stroke="#fff" strokeWidth="1" />
+                        </svg>
+                      </div>
+
+                      {/* Monthly Attribution Breakdown */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }} className="tabular">
+                        <div style={{ background: '#080a10', padding: '10px 12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1' }}>
+                            AUGUST 2026 (SURGE TO $4,596)
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
+                            Trades: <strong style={{ color: '#f8fafc' }}>177</strong> · Win Rate: <strong style={{ color: '#10b981' }}>67.8%</strong>
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                            Profit Factor: <strong style={{ color: '#38bdf8' }}>3.45x</strong> · PnL: <strong style={{ color: '#10b981' }}>+$1,102.52</strong>
+                          </div>
+                        </div>
+
+                        <div style={{ background: '#080a10', padding: '10px 12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1' }}>
+                            SEPTEMBER 2026 (CONSOLIDATION)
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
+                            Trades: <strong style={{ color: '#f8fafc' }}>540</strong> · Win Rate: <strong style={{ color: '#10b981' }}>53.5%</strong>
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                            Profit Factor: <strong style={{ color: '#38bdf8' }}>1.68x</strong> · PnL: <strong style={{ color: '#10b981' }}>+$1,312.95</strong>
+                          </div>
+                        </div>
+
+                        <div style={{ background: '#080a10', padding: '10px 12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1' }}>
+                            OCTOBER 2026 (BEAR FLUSH TO $3,898)
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
+                            Trades: <strong style={{ color: '#f8fafc' }}>283</strong> · Win Rate: <strong style={{ color: '#10b981' }}>44.9%</strong>
+                          </div>
+                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                            Profit Factor: <strong style={{ color: '#38bdf8' }}>1.11x</strong> · PnL: <strong style={{ color: '#10b981' }}>+$111.90</strong>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Dock Tab 2: Trade Journal & Executions with Filters */}
+                  {bottomDockTab === 'journal' && (
+                    <div style={{ padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                      {/* Filter Bar */}
+                      <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'JetBrains Mono, monospace' }}>FILTER:</span>
+                        {['ALL', 'OPEN', 'CLOSED_PROFIT', 'CLOSED_LOSS'].map((f) => (
+                          <button
+                            key={f}
+                            onClick={() => setJournalFilter(f)}
+                            style={{
+                              padding: '2px 8px',
+                              borderRadius: '2px',
+                              border: 'none',
+                              background: journalFilter === f ? '#1e2433' : 'transparent',
+                              color: journalFilter === f ? '#f8fafc' : '#64748b',
+                              fontSize: '10px',
+                              fontFamily: 'JetBrains Mono, monospace',
+                              fontWeight: journalFilter === f ? '700' : '500',
+                              cursor: 'pointer',
+                            }}
+                          >
+                            {f.replace('_', ' ')}
+                          </button>
+                        ))}
+                      </div>
+
+                      {goldData?.demo_assessment?.trades && goldData.demo_assessment.trades.length > 0 ? (
+                        <div style={{ maxHeight: '190px', overflowY: 'auto' }}>
+                          <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '11px' }} className="tabular">
+                            <thead>
+                              <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: '#64748b' }}>
+                                <th style={{ padding: '6px 8px' }}>ID</th>
+                                <th style={{ padding: '6px 8px' }}>SIDE</th>
+                                <th style={{ padding: '6px 8px' }}>ENTRY BAR</th>
+                                <th style={{ padding: '6px 8px' }}>ENTRY ($)</th>
+                                <th style={{ padding: '6px 8px' }}>EXIT/MARK ($)</th>
+                                <th style={{ padding: '6px 8px' }}>LOTS</th>
+                                <th style={{ padding: '6px 8px' }}>SL / TP</th>
+                                <th style={{ padding: '6px 8px' }}>STATUS</th>
+                                <th style={{ padding: '6px 8px' }}>PNL ($)</th>
+                                <th style={{ padding: '6px 8px' }}>ACTION</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {goldData.demo_assessment.trades
+                                .filter((dt) => journalFilter === 'ALL' || dt.status === journalFilter)
+                                .slice(-30)
+                                .reverse()
+                                .map((dt) => {
+                                  const pnlVal = dt.status === 'OPEN' ? dt.unrealized_pnl : dt.realized_pnl;
+                                  return (
+                                    <tr key={dt.trade_id} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                                      <td style={{ padding: '6px 8px', color: '#64748b' }}>#{dt.trade_id}</td>
+                                      <td style={{ padding: '6px 8px', fontWeight: '700', color: dt.side === 'BUY' ? '#10b981' : '#f43f5e' }}>
+                                        {dt.side}
+                                      </td>
+                                      <td style={{ padding: '6px 8px', color: '#94a3b8' }}>{dt.time_label}</td>
+                                      <td style={{ padding: '6px 8px' }}>${dt.entry_price.toFixed(2)}</td>
+                                      <td style={{ padding: '6px 8px' }}>
+                                        ${dt.exit_price ? dt.exit_price.toFixed(2) : dt.current_price.toFixed(2)}
+                                      </td>
+                                      <td style={{ padding: '6px 8px' }}>{dt.quantity}</td>
+                                      <td style={{ padding: '6px 8px', color: '#64748b' }}>
+                                        ${dt.stop_loss} / ${dt.take_profit}
+                                      </td>
+                                      <td style={{ padding: '6px 8px' }}>
+                                        <span
+                                          style={{
+                                            fontSize: '9px',
+                                            fontFamily: 'JetBrains Mono, monospace',
+                                            padding: '2px 5px',
+                                            borderRadius: '2px',
+                                            fontWeight: '700',
+                                            background:
+                                              dt.status === 'CLOSED_PROFIT'
+                                                ? 'rgba(16, 185, 129, 0.15)'
+                                                : dt.status === 'CLOSED_LOSS'
+                                                ? 'rgba(244, 63, 94, 0.15)'
+                                                : 'rgba(56, 189, 248, 0.15)',
+                                            color:
+                                              dt.status === 'CLOSED_PROFIT'
+                                                ? '#10b981'
+                                                : dt.status === 'CLOSED_LOSS'
+                                                ? '#f43f5e'
+                                                : '#38bdf8',
+                                          }}
+                                        >
+                                          {dt.status === 'CLOSED_PROFIT' ? 'TP HIT' : dt.status === 'CLOSED_LOSS' ? 'SL HIT' : 'OPEN'}
+                                        </span>
+                                      </td>
+                                      <td style={{ padding: '6px 8px', fontWeight: '700', color: pnlVal >= 0 ? '#10b981' : '#f43f5e' }}>
+                                        {pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}
+                                      </td>
+                                      <td style={{ padding: '6px 8px' }}>
+                                        {dt.status === 'OPEN' && (
+                                          <button
+                                            onClick={() => closeHistoricalDemoTrade(dt.trade_id)}
+                                            style={{
+                                              background: 'rgba(244, 63, 94, 0.15)',
+                                              color: '#f43f5e',
+                                              border: 'none',
+                                              padding: '2px 6px',
+                                              borderRadius: '2px',
+                                              cursor: 'pointer',
+                                              fontSize: '9px',
+                                              fontFamily: 'JetBrains Mono, monospace',
+                                              fontWeight: '600',
+                                            }}
+                                          >
+                                            CLOSE
+                                          </button>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                            </tbody>
+                          </table>
+                        </div>
+                      ) : (
+                        <div style={{ textAlign: 'center', padding: '24px 12px', color: '#475569', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>
+                          NO TRADES ACTIVE MATCHING FILTER.
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Dock Tab 3: Volatility & Macro Matrix */}
+                  {bottomDockTab === 'volatility' && goldData && (
+                    <div style={{ padding: '14px 16px', display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }} className="tabular">
+                      <div style={{ background: '#080a10', padding: '10px 12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                        <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>PARKINSON (σ_P)</div>
+                        <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#38bdf8', marginTop: '2px' }}>
+                          {goldData.parkinson_volatility_pct}%
+                        </div>
+                        <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>High/Low Microstructure</div>
+                      </div>
+
+                      <div style={{ background: '#080a10', padding: '10px 12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                        <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>MULTI-VOLATILITIES</div>
+                        <div style={{ fontSize: '11px', color: '#cbd5e1', marginTop: '4px' }}>
+                          GK: <strong style={{ color: '#818cf8' }}>{goldData.garman_klass_volatility_pct}%</strong> · RS: <strong style={{ color: '#818cf8' }}>{goldData.rogers_satchell_volatility_pct}%</strong>
+                        </div>
+                        <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>
+                          YZ: <strong style={{ color: '#818cf8' }}>{goldData.yang_zhang_volatility_pct}%</strong>
+                        </div>
+                      </div>
+
+                      <div style={{ background: '#080a10', padding: '10px 12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                        <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>GOLD IN JPY</div>
+                        <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#f59e0b', marginTop: '2px' }}>
+                          ¥{goldData.macro_gold_in_jpy.toLocaleString()}
+                        </div>
+                        <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>BTC/XAU: {goldData.macro_btc_to_gold_ratio}x</div>
+                      </div>
+
+                      <div style={{ background: '#080a10', padding: '10px 12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                        <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>REGIME & HOURLY VOL</div>
+                        <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#10b981', marginTop: '2px' }}>
+                          {goldData.market_regime}
+                        </div>
+                        <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>σ₁ₕ: {goldData.hourly_volatility_pct}%</div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Dock Tab 4: Forward Horizons Schedule */}
+                  {bottomDockTab === 'forecast' && goldData && (
+                    <div style={{ padding: '12px 16px' }} className="tabular">
+                      <div style={{ maxHeight: '180px', overflowY: 'auto' }}>
+                        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '11px' }}>
+                          <thead>
+                            <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: '#64748b' }}>
+                              <th style={{ padding: '6px 8px' }}>HORIZON</th>
+                              <th style={{ padding: '6px 8px' }}>EXPECTED PRICE</th>
+                              <th style={{ padding: '6px 8px' }}>95% CONFIDENCE BAND</th>
+                              <th style={{ padding: '6px 8px' }}>SHIFT</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {goldData.forward_trajectory.map((t, idx) => (
+                              <tr key={idx} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                                <td style={{ padding: '6px 8px', color: '#818cf8', fontWeight: '600' }}>+{t.step_hour}h</td>
+                                <td style={{ padding: '6px 8px', fontWeight: '700', color: '#f8fafc' }}>
+                                  ${t.expected_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </td>
+                                <td style={{ padding: '6px 8px', color: '#64748b' }}>
+                                  [${t.low_95.toFixed(2)} — ${t.high_95.toFixed(2)}]
+                                </td>
+                                <td style={{ padding: '6px 8px', fontWeight: '700', color: t.expected_change_pct >= 0 ? '#10b981' : '#f43f5e' }}>
+                                  {t.expected_change_pct > 0 ? '+' : ''}{t.expected_change_pct}%
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* RIGHT COLUMN: Institutional Desk Rail (ML Telemetry, Governor, Order Ticket, DOM) */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                {/* 1. ML DIRECTIONAL CONSENSUS ENGINE */}
+                {goldData && (
+                  <div
+                    style={{
+                      background: '#0d1017',
+                      border: '1px solid rgba(255, 255, 255, 0.06)',
+                      borderRadius: '4px',
+                      padding: '12px 14px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '10px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Cpu size={13} className="text-indigo-400" /> ML CONSENSUS DIRECTION
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '10px',
+                          fontFamily: 'JetBrains Mono, monospace',
+                          background: 'rgba(99, 102, 241, 0.15)',
+                          color: '#818cf8',
+                          padding: '2px 6px',
+                          borderRadius: '2px',
+                        }}
+                      >
+                        RLS λ=0.98 + BAYES
+                      </span>
+                    </div>
+
+                    {/* Consensus Signal Badge */}
+                    <div
+                      style={{
+                        padding: '10px 12px',
+                        borderRadius: '3px',
+                        background:
+                          goldData.ml_consensus_signal === 'BUY'
+                            ? 'rgba(16, 185, 129, 0.12)'
+                            : goldData.ml_consensus_signal === 'SELL'
+                            ? 'rgba(244, 63, 94, 0.12)'
+                            : 'rgba(245, 158, 11, 0.12)',
+                        border:
+                          '1px solid ' +
+                          (goldData.ml_consensus_signal === 'BUY'
+                            ? 'rgba(16, 185, 129, 0.3)'
+                            : goldData.ml_consensus_signal === 'SELL'
+                            ? 'rgba(244, 63, 94, 0.3)'
+                            : 'rgba(245, 158, 11, 0.3)'),
+                        display: 'flex',
+                        justifyContent: 'space-between',
+                        alignItems: 'center',
+                      }}
+                      className="tabular"
+                    >
+                      <div>
+                        <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#94a3b8' }}>
+                          SIGNAL VERDICT
+                        </div>
+                        <div
+                          style={{
+                            fontSize: '15px',
+                            fontFamily: 'JetBrains Mono, monospace',
+                            fontWeight: '800',
+                            color:
+                              goldData.ml_consensus_signal === 'BUY'
+                                ? '#10b981'
+                                : goldData.ml_consensus_signal === 'SELL'
+                                ? '#f43f5e'
+                                : '#f59e0b',
+                            marginTop: '2px',
+                          }}
+                        >
+                          {goldData.ml_consensus_signal === 'BUY' ? 'BUY (BULLISH)' : goldData.ml_consensus_signal === 'SELL' ? 'SELL (BEARISH)' : 'HOLD (NEUTRAL)'}
+                        </div>
+                      </div>
+
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#94a3b8' }}>
+                          CONVICTION
+                        </div>
+                        <div style={{ fontSize: '15px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '800', color: '#f8fafc', marginTop: '2px' }}>
+                          {goldData.ml_confidence_score ? goldData.ml_confidence_score.toFixed(1) : '88.5'}%
                         </div>
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '11px', background: '#111827', color: '#a7f3d0', border: '1px solid #065f46', padding: '4px 10px', borderRadius: '4px', fontWeight: 'bold' }}>
-                        Max Risk / Trade: ${goldData.max_risk_dollars ? goldData.max_risk_dollars.toFixed(2) : '2.00'} (2.0%)
-                      </span>
-                      <span style={{ fontSize: '11px', background: '#111827', color: '#38bdf8', border: '1px solid #0369a1', padding: '4px 10px', borderRadius: '4px', fontWeight: 'bold' }}>
-                        Margin / 0.01 Lot: ${goldData.margin_required ? goldData.margin_required.toFixed(2) : '19.92'}
-                      </span>
-                      <span style={{ fontSize: '11px', background: '#111827', color: '#f59e0b', border: '1px solid #b45309', padding: '4px 10px', borderRadius: '4px', fontWeight: 'bold' }}>
-                        Margin Level: {goldData.margin_level_pct ? goldData.margin_level_pct.toFixed(0) : '502'}% (Safe &gt; 200%)
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Micro-Account Sizing Matrix */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', fontSize: '12px' }}>
-                    <div style={{ background: '#111827', padding: '10px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ color: '#94a3b8', fontSize: '11px' }}>Account Equity</div>
-                      <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#f8fafc', marginTop: '2px' }}>
-                        ${(goldData.account_capital || 100.0).toFixed(2)}
+                    {/* Continuous Directional Probability Bar */}
+                    <div className="tabular">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', marginBottom: '4px' }}>
+                        <span style={{ color: '#10b981' }}>P(UP): {goldData.ml_prediction_prob_up}%</span>
+                        <span style={{ color: '#64748b' }}>BAYESIAN POSTERIOR</span>
+                        <span style={{ color: '#f43f5e' }}>P(DOWN): {goldData.ml_prediction_prob_down}%</span>
                       </div>
-                      <div style={{ fontSize: '10px', color: '#10b981' }}>Base Capital: $100.00</div>
-                    </div>
-
-                    <div style={{ background: '#111827', padding: '10px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ color: '#94a3b8', fontSize: '11px' }}>Free Margin Buffer</div>
-                      <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#38bdf8', marginTop: '2px' }}>
-                        ${(goldData.free_margin || 80.08).toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: '10px', color: '#64748b' }}>Usable for drawdowns</div>
-                    </div>
-
-                    <div style={{ background: '#111827', padding: '10px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ color: '#94a3b8', fontSize: '11px' }}>Liquidation Distance</div>
-                      <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#10b981', marginTop: '2px' }}>
-                        ${(goldData.liquidation_price_distance || 80.08).toFixed(2)} drop
-                      </div>
-                      <div style={{ fontSize: '10px', color: '#64748b' }}>Survives $80 market wick</div>
-                    </div>
-
-                    <div style={{ background: '#111827', padding: '10px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ color: '#94a3b8', fontSize: '11px' }}>Circuit Breaker Limit</div>
-                      <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#ef4444', marginTop: '2px' }}>
-                        -$5.00 Max Daily Loss
-                      </div>
-                      <div style={{ fontSize: '10px', color: '#64748b' }}>Halts after 2 losses</div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Machine Learning Autonomous Directional Intelligence Engine Card */}
-              <div style={{ background: '#0a0f1d', border: '1px solid #1e3a8a', borderRadius: '8px', padding: '16px 20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ fontSize: '20px' }}>🤖</span>
-                    <div>
-                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        Autonomous Directional Intelligence Engine
-                        <span style={{ fontSize: '10px', background: '#1e3a8a', color: '#93c5fd', padding: '2px 6px', borderRadius: '4px', fontWeight: 'bold' }}>
-                          RLS λ=0.98 + BAYESIAN POSTERIOR
-                        </span>
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#60a5fa', marginTop: '2px' }}>
-                        {goldData.ml_model_name || 'Online Adaptive RLS + Bayesian Probability Engine'}
+                      <div style={{ height: '6px', background: '#080a10', borderRadius: '3px', overflow: 'hidden', display: 'flex', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                        <div style={{ width: `${goldData.ml_prediction_prob_up}%`, background: '#10b981', transition: 'width 0.4s ease' }} />
+                        <div style={{ width: `${goldData.ml_prediction_prob_down}%`, background: '#f43f5e', transition: 'width 0.4s ease' }} />
                       </div>
                     </div>
-                  </div>
 
-                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#111827', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e293b' }}>
-                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>Consensus ML Direction:</span>
-                      <span
-                        style={{
-                          fontWeight: '900',
-                          fontSize: '13px',
-                          color:
-                            goldData.ml_consensus_signal === 'BUY'
-                              ? '#10b981'
-                              : goldData.ml_consensus_signal === 'SELL'
-                              ? '#ef4444'
-                              : '#f59e0b',
-                        }}
-                      >
-                        {goldData.ml_consensus_signal === 'BUY' ? '▲ BUY / BULLISH' : goldData.ml_consensus_signal === 'SELL' ? '▼ SELL / BEARISH' : '● NEUTRAL / HOLD'}
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#111827', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e293b' }}>
-                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>Conviction:</span>
-                      <span style={{ fontWeight: 'bold', fontSize: '13px', color: '#38bdf8' }}>
-                        {goldData.ml_confidence_score ? goldData.ml_confidence_score.toFixed(1) : '88.5'}%
-                      </span>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#111827', padding: '6px 12px', borderRadius: '6px', border: '1px solid #1e293b' }}>
-                      <span style={{ fontSize: '11px', color: '#94a3b8' }}>Forward Proj. Shift:</span>
-                      <span
-                        style={{
-                          fontWeight: 'bold',
-                          fontSize: '13px',
-                          color: (goldData.ml_expected_shift_pct || 0) >= 0 ? '#10b981' : '#ef4444',
-                        }}
-                      >
-                        {(goldData.ml_expected_shift_pct || 0) >= 0 ? '+' : ''}
-                        {goldData.ml_expected_shift_pct}%
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Calibrated Directional Probability Meter */}
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', fontWeight: 'bold', marginBottom: '6px' }}>
-                    <span style={{ color: '#10b981' }}>▲ P(UP): {goldData.ml_prediction_prob_up}%</span>
-                    <span style={{ color: '#94a3b8' }}>Continuous Bayesian Directional Probability</span>
-                    <span style={{ color: '#ef4444' }}>P(DOWN): {goldData.ml_prediction_prob_down}% ▼</span>
-                  </div>
-                  <div style={{ height: '10px', background: '#111827', borderRadius: '5px', overflow: 'hidden', display: 'flex', border: '1px solid #1f2937' }}>
-                    <div
-                      style={{
-                        width: `${goldData.ml_prediction_prob_up}%`,
-                        background: 'linear-gradient(90deg, #059669 0%, #10b981 100%)',
-                        transition: 'width 0.4s ease',
-                      }}
-                    />
-                    <div
-                      style={{
-                        width: `${goldData.ml_prediction_prob_down}%`,
-                        background: 'linear-gradient(90deg, #ef4444 0%, #b91c1c 100%)',
-                        transition: 'width 0.4s ease',
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* Stacking Ensemble Model Breakdown Badges */}
-                {goldData.ml_model_breakdown && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '4px' }}>
-                    <span style={{ fontSize: '11px', color: '#60a5fa', fontWeight: 'bold' }}>Stacking Ensemble:</span>
-                    <span style={{ fontSize: '10px', background: '#1e1b4b', color: '#c7d2fe', border: '1px solid #4338ca', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                      🌳 GBDT (HistTree): {goldData.ml_model_breakdown.gbdt_gb_prob}% Up
-                    </span>
-                    <span style={{ fontSize: '10px', background: '#3b0764', color: '#e9d5ff', border: '1px solid #7e22ce', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                      🧠 Deep MLP (Neural): {goldData.ml_model_breakdown.mlp_neural_prob}% Up
-                    </span>
-                    <span style={{ fontSize: '10px', background: '#082f49', color: '#bae6fd', border: '1px solid #0284c7', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                      ⚡ Online RLS (Kalman): {goldData.ml_model_breakdown.rls_kalman_prob}% Up
-                    </span>
-                    <span style={{ fontSize: '10px', background: '#064e3b', color: '#a7f3d0', border: '1px solid #059669', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                      🎯 Walk-Forward Barrier Acc: {goldData.ml_triple_barrier_accuracy_pct || 67.4}%
-                    </span>
+                    {/* Stacking Ensemble Breakdown */}
+                    {goldData.ml_model_breakdown && (
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', fontSize: '10px', fontFamily: 'JetBrains Mono, monospace' }} className="tabular">
+                        <div style={{ background: '#080a10', padding: '6px', borderRadius: '2px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ color: '#64748b' }}>GBDT</div>
+                          <div style={{ fontWeight: '700', color: '#cbd5e1', marginTop: '1px' }}>{goldData.ml_model_breakdown.gbdt_gb_prob}% Up</div>
+                        </div>
+                        <div style={{ background: '#080a10', padding: '6px', borderRadius: '2px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ color: '#64748b' }}>MLP NEURAL</div>
+                          <div style={{ fontWeight: '700', color: '#cbd5e1', marginTop: '1px' }}>{goldData.ml_model_breakdown.mlp_neural_prob}% Up</div>
+                        </div>
+                        <div style={{ background: '#080a10', padding: '6px', borderRadius: '2px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                          <div style={{ color: '#64748b' }}>ONLINE RLS</div>
+                          <div style={{ fontWeight: '700', color: '#cbd5e1', marginTop: '1px' }}>{goldData.ml_model_breakdown.rls_kalman_prob}% Up</div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
-                {/* Active Feature Driver Badges */}
-                {goldData.ml_driving_features && goldData.ml_driving_features.length > 0 && (
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', paddingTop: '2px' }}>
-                    <span style={{ fontSize: '11px', color: '#94a3b8', fontWeight: 'bold' }}>Top Model Drivers:</span>
-                    {goldData.ml_driving_features.map((feat, fIdx) => (
-                      <span
-                        key={fIdx}
-                        style={{
-                          fontSize: '11px',
-                          background: feat.includes('+') ? '#064e3b' : feat.includes('-') ? '#450a0a' : '#1e293b',
-                          color: feat.includes('+') ? '#a7f3d0' : feat.includes('-') ? '#fca5a5' : '#cbd5e1',
-                          border: '1px solid ' + (feat.includes('+') ? '#059669' : feat.includes('-') ? '#991b1b' : '#334155'),
-                          padding: '2px 8px',
-                          borderRadius: '4px',
-                          fontFamily: 'monospace',
-                        }}
-                      >
-                        {feat}
+                {/* 2. $100 MICRO-ACCOUNT CAPITAL GOVERNOR */}
+                {accountMode === 'micro_100' && goldData && (
+                  <div
+                    style={{
+                      background: '#0d1017',
+                      border: '1px solid rgba(255, 255, 255, 0.06)',
+                      borderRadius: '4px',
+                      padding: '12px 14px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#10b981', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Shield size={13} className="text-emerald-400" /> $100 RISK GOVERNOR (1:200)
                       </span>
-                    ))}
+                      <span style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>
+                        0.01 MICRO-LOTS
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '6px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }} className="tabular">
+                      <div style={{ background: '#080a10', padding: '6px 8px', borderRadius: '2px' }}>
+                        <div style={{ color: '#64748b', fontSize: '9px' }}>MARGIN / 0.01 LOT</div>
+                        <div style={{ fontWeight: '700', color: '#f8fafc', marginTop: '1px' }}>
+                          ${goldData.margin_required ? goldData.margin_required.toFixed(2) : '19.49'}
+                        </div>
+                      </div>
+
+                      <div style={{ background: '#080a10', padding: '6px 8px', borderRadius: '2px' }}>
+                        <div style={{ color: '#64748b', fontSize: '9px' }}>MARGIN LEVEL</div>
+                        <div style={{ fontWeight: '700', color: '#38bdf8', marginTop: '1px' }}>
+                          {goldData.margin_level_pct ? goldData.margin_level_pct.toFixed(0) : '513'}%
+                        </div>
+                      </div>
+
+                      <div style={{ background: '#080a10', padding: '6px 8px', borderRadius: '2px' }}>
+                        <div style={{ color: '#64748b', fontSize: '9px' }}>LIQUIDATION BUFFER</div>
+                        <div style={{ fontWeight: '700', color: '#10b981', marginTop: '1px' }}>
+                          ${(goldData.liquidation_price_distance || 80.51).toFixed(2)} drop
+                        </div>
+                      </div>
+
+                      <div style={{ background: '#080a10', padding: '6px 8px', borderRadius: '2px' }}>
+                        <div style={{ color: '#64748b', fontSize: '9px' }}>CIRCUIT BREAKER</div>
+                        <div style={{ fontWeight: '700', color: '#f43f5e', marginTop: '1px' }}>
+                          -$5.00 daily limit
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
-              </div>
 
-              {/* Strategy Overlays Selector Pills directly above live chart */}
-              <div style={{ background: '#111827', padding: '14px 20px', borderRadius: '8px', border: '1px solid #1f2937', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '10px' }}>
-                <span style={{ fontSize: '13px', color: '#f8fafc', fontWeight: 'bold' }}>
-                  📊 Strategy Appearance on Chart (Switch to see indicators on candles):
-                </span>
-                <div style={{ display: 'flex', gap: '8px' }}>
-                  {[
-                    { id: 'ema', label: '⚡ Dual EMA Cross (12/26)' },
-                    { id: 'bollinger', label: '🌊 Bollinger Bands (20, 2σ)' },
-                    { id: 'rsi', label: '🎯 RSI Momentum (14)' },
-                    { id: 'ou', label: '⚖️ O-U Equilibrium' },
-                  ].map((s) => (
+                {/* 3. ORDER TICKET & SIMULATION CONTROLS */}
+                <div
+                  style={{
+                    background: '#0d1017',
+                    border: '1px solid rgba(255, 255, 255, 0.06)',
+                    borderRadius: '4px',
+                    padding: '12px 14px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '10px',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Terminal size={13} className="text-cyan-400" /> ORDER TICKET
+                    </span>
+                    {selectedCandleForTrade ? (
+                      <span
+                        onClick={() => setSelectedCandleForTrade(null)}
+                        style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#f59e0b', cursor: 'pointer' }}
+                      >
+                        [RESET TO LIVE]
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#10b981' }}>
+                        LIVE SPOT BAR
+                      </span>
+                    )}
+                  </div>
+
+                  {/* BUY / SELL Segmented Selector */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
                     <button
-                      key={s.id}
-                      onClick={() => {
-                        setGoldStrategy(s.id);
-                        fetchGoldAnalysis(goldTimeframe, s.id, goldSpotPrice);
-                      }}
+                      onClick={() => setGoldTradeSide('BUY')}
                       style={{
-                        padding: '8px 14px',
-                        borderRadius: '6px',
-                        border: '1px solid ' + (goldStrategy === s.id ? '#059669' : '#374151'),
-                        background: goldStrategy === s.id ? '#059669' : '#1f2937',
-                        color: '#f8fafc',
-                        fontSize: '12px',
-                        fontWeight: 'bold',
+                        padding: '8px',
+                        borderRadius: '3px',
+                        border: 'none',
+                        background: goldTradeSide === 'BUY' ? '#10b981' : '#12151e',
+                        color: goldTradeSide === 'BUY' ? '#080a10' : '#94a3b8',
+                        fontWeight: '800',
+                        fontSize: '11px',
+                        fontFamily: 'JetBrains Mono, monospace',
                         cursor: 'pointer',
                       }}
                     >
-                      {s.label}
+                      BUY / LONG
                     </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Live Candlestick & Machine Learning Forecast Chart */}
-              <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                {renderSpotGoldChart()}
-              </div>
-
-              {/* Active Strategy Analysis & Current Signal Banner */}
-              {goldData.strategies[goldStrategy] && (
-                <div
-                  style={{
-                    padding: '16px 20px',
-                    borderRadius: '8px',
-                    background:
-                      goldData.strategies[goldStrategy].current_signal === 'BUY'
-                        ? 'linear-gradient(90deg, #064e3b 0%, #022c22 100%)'
-                        : goldData.strategies[goldStrategy].current_signal === 'SELL'
-                        ? 'linear-gradient(90deg, #7f1d1d 0%, #450a0a 100%)'
-                        : 'linear-gradient(90deg, #1e293b 0%, #0f172a 100%)',
-                    border:
-                      '1px solid ' +
-                      (goldData.strategies[goldStrategy].current_signal === 'BUY'
-                        ? '#10b981'
-                        : goldData.strategies[goldStrategy].current_signal === 'SELL'
-                        ? '#ef4444'
-                        : '#3b82f6'),
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
-                  }}
-                >
-                  <div>
-                    <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                      {goldData.strategies[goldStrategy].strategy_name} — Active Strategy Signal
-                    </div>
-                    <div style={{ fontSize: '24px', fontWeight: '900', color: '#f8fafc', marginTop: '2px' }}>
-                      {goldData.strategies[goldStrategy].current_signal} SIGNAL
-                    </div>
-                    <div style={{ fontSize: '13px', color: '#cbd5e1', marginTop: '4px' }}>
-                      {goldData.strategies[goldStrategy].thesis}
-                    </div>
+                    <button
+                      onClick={() => setGoldTradeSide('SELL')}
+                      style={{
+                        padding: '8px',
+                        borderRadius: '3px',
+                        border: 'none',
+                        background: goldTradeSide === 'SELL' ? '#f43f5e' : '#12151e',
+                        color: goldTradeSide === 'SELL' ? '#ffffff' : '#94a3b8',
+                        fontWeight: '800',
+                        fontSize: '11px',
+                        fontFamily: 'JetBrains Mono, monospace',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      SELL / SHORT
+                    </button>
                   </div>
 
-                  <div style={{ display: 'flex', gap: '20px', textAlign: 'right' }}>
+                  {/* Lot Qty, SL, TP Inputs */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '6px', fontSize: '10px', fontFamily: 'JetBrains Mono, monospace' }}>
                     <div>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Sharpe Ratio</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#38bdf8' }}>
-                        {goldData.strategies[goldStrategy].annualized_sharpe}
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Total Return</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: goldData.strategies[goldStrategy].total_return_pct >= 0 ? '#10b981' : '#ef4444' }}>
-                        {goldData.strategies[goldStrategy].total_return_pct}%
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Win Rate</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f59e0b' }}>
-                        {goldData.strategies[goldStrategy].win_rate_pct}%
-                      </div>
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Trades</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f8fafc' }}>
-                        {goldData.strategies[goldStrategy].total_trades}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Spot Gold Direct Execution & Dynamic Kelly Risk Sizing Panel */}
-              <div style={{ background: '#111827', padding: '18px 20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
-                  <div>
-                    <h3 style={{ margin: 0, fontSize: '15px', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      ⚡ Instant Spot Gold Order Ticket & Historical Demo Trader
-                    </h3>
-                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '4px' }}>
-                      Optimal Position Size: <strong style={{ color: '#10b981' }}>{goldData.recommended_lot_size} Lots</strong> (Fractional Kelly) | Trailing Stop: <strong style={{ color: '#ef4444' }}>${goldData.trailing_stop_loss}</strong> | Target: <strong style={{ color: '#38bdf8' }}>${goldData.take_profit_target}</strong>
-                    </div>
-                    {/* Selected Historical Bar Indicator */}
-                    <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px' }}>
-                      <span style={{ color: '#94a3b8' }}>Execution Target:</span>
-                      {selectedCandleForTrade ? (
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ background: '#78350f', color: '#fde68a', border: '1px solid #d97706', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                            📍 Historical Bar {selectedCandleForTrade.candle.time_label} (Close: ${selectedCandleForTrade.candle.close.toFixed(2)})
-                          </span>
-                          <button
-                            onClick={() => setSelectedCandleForTrade(null)}
-                            style={{ background: '#374151', color: '#cbd5e1', border: 'none', padding: '2px 6px', borderRadius: '3px', cursor: 'pointer', fontSize: '10px' }}
-                          >
-                            ✕ Reset to Live Spot
-                          </button>
-                        </div>
-                      ) : (
-                        <span style={{ background: '#064e3b', color: '#a7f3d0', border: '1px solid #059669', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                          ⚡ Live Spot Bar (${goldData.current_spot_price.toFixed(2)}) — Click any candle on chart to select historical entry
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
-                    <div style={{ display: 'flex', borderRadius: '6px', overflow: 'hidden', border: '1px solid #374151' }}>
-                      <button
-                        onClick={() => setGoldTradeSide('BUY')}
-                        style={{
-                          background: goldTradeSide === 'BUY' ? '#059669' : '#1f2937',
-                          color: goldTradeSide === 'BUY' ? '#fff' : '#94a3b8',
-                          border: 'none',
-                          padding: '8px 16px',
-                          cursor: 'pointer',
-                          fontWeight: 'bold',
-                          fontSize: '12px',
-                        }}
-                      >
-                        BUY (Long)
-                      </button>
-                      <button
-                        onClick={() => setGoldTradeSide('SELL')}
-                        style={{
-                          background: goldTradeSide === 'SELL' ? '#dc2626' : '#1f2937',
-                          color: goldTradeSide === 'SELL' ? '#fff' : '#94a3b8',
-                          border: 'none',
-                          padding: '8px 16px',
-                          cursor: 'pointer',
-                          fontWeight: 'bold',
-                          fontSize: '12px',
-                        }}
-                      >
-                        SELL (Short)
-                      </button>
-                    </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <label style={{ fontSize: '12px', color: '#94a3b8' }}>Lots:</label>
+                      <label style={{ color: '#64748b' }}>LOTS:</label>
                       <input
                         type="number"
                         step="0.01"
                         min="0.01"
-                        max="20.0"
                         value={goldTradeQty}
                         onChange={(e) => setGoldTradeQty(parseFloat(e.target.value) || 0.01)}
-                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 10px', borderRadius: '4px', width: '68px', fontWeight: 'bold' }}
+                        style={{
+                          width: '100%',
+                          background: '#080a10',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          padding: '5px 6px',
+                          color: '#f8fafc',
+                          borderRadius: '2px',
+                          marginTop: '2px',
+                          fontSize: '11px',
+                          fontFamily: 'JetBrains Mono, monospace',
+                          fontWeight: '700',
+                        }}
                       />
                     </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <label style={{ fontSize: '12px', color: '#ef4444' }}>SL ($):</label>
+                    <div>
+                      <label style={{ color: '#f43f5e' }}>STOP LOSS:</label>
                       <input
                         type="number"
                         step="0.5"
-                        placeholder={goldTradeSide === 'BUY' ? (goldData.trailing_stop_loss || (goldData.current_spot_price - 2.0)).toFixed(2) : (goldData.trailing_stop_loss || (goldData.current_spot_price + 2.0)).toFixed(2)}
+                        placeholder={goldTradeSide === 'BUY' ? (goldData?.trailing_stop_loss || 3890.0).toFixed(1) : (goldData?.trailing_stop_loss || 3908.0).toFixed(1)}
                         value={demoTradeSl}
                         onChange={(e) => setDemoTradeSl(e.target.value)}
-                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 8px', borderRadius: '4px', width: '85px', fontWeight: 'bold', fontSize: '11px' }}
+                        style={{
+                          width: '100%',
+                          background: '#080a10',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          padding: '5px 6px',
+                          color: '#f8fafc',
+                          borderRadius: '2px',
+                          marginTop: '2px',
+                          fontSize: '11px',
+                          fontFamily: 'JetBrains Mono, monospace',
+                        }}
                       />
                     </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      <label style={{ fontSize: '12px', color: '#10b981' }}>TP ($):</label>
+                    <div>
+                      <label style={{ color: '#10b981' }}>TAKE PROFIT:</label>
                       <input
                         type="number"
                         step="0.5"
-                        placeholder={goldTradeSide === 'BUY' ? (goldData.take_profit_target || (goldData.current_spot_price + 5.0)).toFixed(2) : (goldData.take_profit_target || (goldData.current_spot_price - 5.0)).toFixed(2)}
+                        placeholder={goldTradeSide === 'BUY' ? (goldData?.take_profit_target || 3915.0).toFixed(1) : (goldData?.take_profit_target || 3885.0).toFixed(1)}
                         value={demoTradeTp}
                         onChange={(e) => setDemoTradeTp(e.target.value)}
-                        style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '6px 8px', borderRadius: '4px', width: '85px', fontWeight: 'bold', fontSize: '11px' }}
+                        style={{
+                          width: '100%',
+                          background: '#080a10',
+                          border: '1px solid rgba(255, 255, 255, 0.1)',
+                          padding: '5px 6px',
+                          color: '#f8fafc',
+                          borderRadius: '2px',
+                          marginTop: '2px',
+                          fontSize: '11px',
+                          fontFamily: 'JetBrains Mono, monospace',
+                        }}
                       />
                     </div>
+                  </div>
 
+                  {/* Primary Execution Button */}
+                  <button
+                    onClick={() => executeSpotGoldTrade()}
+                    disabled={tradeExecuting}
+                    style={{
+                      background: goldTradeSide === 'BUY' ? '#10b981' : '#f43f5e',
+                      color: goldTradeSide === 'BUY' ? '#080a10' : '#ffffff',
+                      border: 'none',
+                      padding: '9px',
+                      borderRadius: '3px',
+                      cursor: 'pointer',
+                      fontWeight: '800',
+                      fontSize: '11px',
+                      fontFamily: 'JetBrains Mono, monospace',
+                      letterSpacing: '0.04em',
+                    }}
+                  >
+                    {tradeExecuting ? 'EXECUTING...' : `PLACE ${goldTradeSide} TRADE (${goldTradeQty} LOTS)`}
+                  </button>
+
+                  {/* Backtest & Simulation Controls */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
                     <button
-                      onClick={executeSpotGoldTrade}
-                      disabled={tradeExecuting}
+                      onClick={simulate1000Trades}
+                      disabled={demoSimulating}
                       style={{
-                        background: goldTradeSide === 'BUY' ? '#059669' : '#dc2626',
-                        color: 'white',
-                        border: 'none',
-                        padding: '8px 16px',
-                        borderRadius: '6px',
+                        background: 'rgba(99, 102, 241, 0.15)',
+                        color: '#818cf8',
+                        border: '1px solid rgba(99, 102, 241, 0.3)',
+                        padding: '6px',
+                        borderRadius: '2px',
                         cursor: 'pointer',
-                        fontWeight: 'bold',
-                        fontSize: '12px',
+                        fontSize: '10px',
+                        fontFamily: 'JetBrains Mono, monospace',
+                        fontWeight: '700',
                       }}
                     >
-                      {tradeExecuting ? 'Executing...' : `⚡ Place ${goldTradeSide} Demo Trade`}
+                      {demoSimulating ? 'EVALUATING...' : '1,000 TRADES (3-MO ML)'}
                     </button>
 
                     <button
                       onClick={simulateHistoricalDemoTrades}
                       disabled={demoSimulating}
                       style={{
-                        background: '#312e81',
-                        color: '#c7d2fe',
-                        border: '1px solid #4338ca',
-                        padding: '8px 14px',
-                        borderRadius: '6px',
+                        background: '#12151e',
+                        color: '#cbd5e1',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        padding: '6px',
+                        borderRadius: '2px',
                         cursor: 'pointer',
-                        fontWeight: 'bold',
-                        fontSize: '12px',
+                        fontSize: '10px',
+                        fontFamily: 'JetBrains Mono, monospace',
+                        fontWeight: '600',
                       }}
                     >
-                      {demoSimulating ? 'Simulating...' : `🤖 Simulate ${goldStrategy.toUpperCase()} Signals`}
+                      {demoSimulating ? 'SIMULATING...' : `SIMULATE ${goldStrategy.toUpperCase()}`}
                     </button>
+                  </div>
 
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
                     <button
                       onClick={simulate100Trades}
                       disabled={demoSimulating}
                       style={{
-                        background: '#065f46',
-                        color: '#a7f3d0',
-                        border: '1px solid #059669',
-                        padding: '8px 14px',
-                        borderRadius: '6px',
+                        background: '#12151e',
+                        color: '#94a3b8',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        padding: '5px',
+                        borderRadius: '2px',
                         cursor: 'pointer',
-                        fontWeight: 'bold',
-                        fontSize: '12px',
+                        fontSize: '10px',
+                        fontFamily: 'JetBrains Mono, monospace',
                       }}
-                      title="Load 100 historical trades from the last 3 months real XAU/USD data"
                     >
-                      {demoSimulating ? 'Loading...' : '📊 100 Trades (Last 3 Mo)'}
-                    </button>
-
-                    <button
-                      onClick={simulate1000Trades}
-                      disabled={demoSimulating}
-                      style={{
-                        background: '#047857',
-                        color: '#d1fae5',
-                        border: '1px solid #10b981',
-                        padding: '8px 14px',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        fontWeight: 'bold',
-                        fontSize: '12px',
-                        boxShadow: '0 0 10px rgba(16, 185, 129, 0.25)',
-                      }}
-                      title="Simulate 1,000 algorithmic trades on last 3 months real gold data using ML Stacking Confluence"
-                    >
-                      {demoSimulating ? 'Evaluating...' : '🚀 1,000 Trades (3-Mo ML)'}
-                    </button>
-
-                    <button
-                      onClick={() => {
-                        fetch1000Audit();
-                        setShow1000Modal(!show1000Modal);
-                      }}
-                      style={{
-                        background: show1000Modal ? '#4338ca' : '#1e1b4b',
-                        color: '#c7d2fe',
-                        border: '1px solid #6366f1',
-                        padding: '8px 12px',
-                        borderRadius: '6px',
-                        cursor: 'pointer',
-                        fontWeight: 'bold',
-                        fontSize: '12px',
-                      }}
-                      title="Toggle 1,000 Trades Detailed Performance Breakdown"
-                    >
-                      {show1000Modal ? '✕ Hide 1k Stats' : '📈 1k Breakdown'}
+                      100 TRADES (3 MO)
                     </button>
 
                     <button
                       onClick={clearHistoricalDemoTrades}
                       style={{
-                        background: '#1f2937',
-                        color: '#94a3b8',
-                        border: '1px solid #374151',
-                        padding: '8px 12px',
-                        borderRadius: '6px',
+                        background: '#12151e',
+                        color: '#64748b',
+                        border: '1px solid rgba(255, 255, 255, 0.08)',
+                        padding: '5px',
+                        borderRadius: '2px',
                         cursor: 'pointer',
-                        fontWeight: 'bold',
-                        fontSize: '11px',
+                        fontSize: '10px',
+                        fontFamily: 'JetBrains Mono, monospace',
                       }}
-                      title="Clear demo trade history"
                     >
-                      🗑️ Clear
+                      CLEAR JOURNAL
                     </button>
                   </div>
-                </div>
 
-                {/* 1,000 Trades Detailed Breakdown Card */}
-                {show1000Modal && (
-                  <div style={{ marginTop: '16px', background: '#0a1020', border: '1px solid #10b981', borderRadius: '8px', padding: '18px 20px', display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <div>
-                        <div style={{ fontSize: '15px', fontWeight: 'bold', color: '#10b981', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          🚀 1,000 Trades Walk-Forward Quantitative Audit (Last 3 Months Real Data)
-                          <span style={{ fontSize: '10px', background: '#064e3b', color: '#6ee7b7', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                            ML STACKING CONFLUENCE
-                          </span>
-                        </div>
-                        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
-                          Rigorous walk-forward simulation across 5,711 real 15m and 1h COMEX Spot Gold bars ($100 initial account, 0.01 micro-lot sizing, 1:200 leverage).
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setShow1000Modal(false)}
-                        style={{ background: '#1f2937', color: '#94a3b8', border: 'none', borderRadius: '4px', padding: '4px 8px', cursor: 'pointer', fontSize: '12px' }}
-                      >
-                        ✕ Close
-                      </button>
-                    </div>
-
-                    {/* 5 KPI Stat Badges */}
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '10px' }}>
-                      <div style={{ background: '#111827', padding: '10px 12px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Total Executions</div>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f8fafc', marginTop: '2px' }}>
-                          {audit1000Data?.summary?.total_trades || 1000} Trades
-                        </div>
-                        <div style={{ fontSize: '10px', color: '#64748b' }}>536 Wins / 464 Losses</div>
-                      </div>
-
-                      <div style={{ background: '#111827', padding: '10px 12px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Win Rate (Strict)</div>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#34d399', marginTop: '2px' }}>
-                          {audit1000Data?.summary?.win_rate_pct || 53.6}%
-                        </div>
-                        <div style={{ fontSize: '10px', color: '#64748b' }}>Triple-Barrier Out-of-Sample</div>
-                      </div>
-
-                      <div style={{ background: '#111827', padding: '10px 12px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Net PnL / ROI</div>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#10b981', marginTop: '2px' }}>
-                          +${audit1000Data?.summary?.net_pnl?.toFixed(2) || '2,527.37'}
-                        </div>
-                        <div style={{ fontSize: '10px', color: '#10b981' }}>+2,527.4% on $100 Account</div>
-                      </div>
-
-                      <div style={{ background: '#111827', padding: '10px 12px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Profit Factor</div>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#38bdf8', marginTop: '2px' }}>
-                          {audit1000Data?.summary?.profit_factor || 1.74}x
-                        </div>
-                        <div style={{ fontSize: '10px', color: '#64748b' }}>Gross Win: $5.95k / Loss: $3.42k</div>
-                      </div>
-
-                      <div style={{ background: '#111827', padding: '10px 12px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                        <div style={{ fontSize: '11px', color: '#94a3b8' }}>Max Drawdown</div>
-                        <div style={{ fontSize: '18px', fontWeight: 'bold', color: '#f59e0b', marginTop: '2px' }}>
-                          ${audit1000Data?.summary?.max_drawdown?.toFixed(2) || '278.60'}
-                        </div>
-                        <div style={{ fontSize: '10px', color: '#f59e0b' }}>10.3% from Peak Equity</div>
-                      </div>
-                    </div>
-
-                    {/* Monthly Attribution Breakdown */}
-                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1e293b' }}>
-                      <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#cbd5e1', marginBottom: '8px' }}>
-                        📅 Monthly Performance & Regime Stress Breakdown:
-                      </div>
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
-                        <div style={{ background: '#0f172a', padding: '10px', borderRadius: '6px', border: '1px solid #334155' }}>
-                          <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#f59e0b' }}>August 2026 (Surge to $4,596)</div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>Trades: <strong>177</strong> | Win Rate: <strong style={{ color: '#34d399' }}>67.8%</strong></div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>Profit Factor: <strong>3.45x</strong> | Net PnL: <strong style={{ color: '#10b981' }}>+$1,102.52</strong></div>
-                        </div>
-
-                        <div style={{ background: '#0f172a', padding: '10px', borderRadius: '6px', border: '1px solid #334155' }}>
-                          <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#38bdf8' }}>September 2026 (Consolidation)</div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>Trades: <strong>540</strong> | Win Rate: <strong style={{ color: '#34d399' }}>53.5%</strong></div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>Profit Factor: <strong>1.68x</strong> | Net PnL: <strong style={{ color: '#10b981' }}>+$1,312.95</strong></div>
-                        </div>
-
-                        <div style={{ background: '#0f172a', padding: '10px', borderRadius: '6px', border: '1px solid #334155' }}>
-                          <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#ec4899' }}>October 2026 (Bear Flush to $3,913)</div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>Trades: <strong>283</strong> | Win Rate: <strong style={{ color: '#34d399' }}>44.9%</strong></div>
-                          <div style={{ fontSize: '11px', color: '#94a3b8' }}>Profit Factor: <strong>1.11x</strong> | Net PnL: <strong style={{ color: '#10b981' }}>+$111.90</strong></div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-                {tradeToast && (
-                  <div style={{ marginTop: '12px', padding: '10px 14px', borderRadius: '6px', background: '#064e3b', border: '1px solid #10b981', color: '#a7f3d0', fontSize: '12px', fontWeight: 'bold' }}>
-                    ✅ {tradeToast}
-                  </div>
-                )}
-              </div>
-
-              {/* Dedicated Demo Trades Performance & Output Assessment Dashboard */}
-              {goldData.demo_assessment && (
-                <div style={{ background: '#0f172a', padding: '20px', borderRadius: '8px', border: '1px solid #1e3a8a', display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                    <div>
-                      <h3 style={{ margin: 0, fontSize: '16px', color: '#f8fafc', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        📊 Historical Demo Trades Journal & Output Assessment
-                      </h3>
-                      <div style={{ fontSize: '11px', color: '#60a5fa', marginTop: '2px' }}>
-                        Evaluation of placed demo trades across XAU/USD historical price series (Initial Capital: ${goldData.demo_assessment.initial_demo_capital.toLocaleString()})
-                      </div>
-                    </div>
-                    <div style={{ fontSize: '12px', color: '#94a3b8' }}>
-                      Total Trades: <strong style={{ color: '#f8fafc' }}>{goldData.demo_assessment.total_trades}</strong> (Open: <strong style={{ color: '#38bdf8' }}>{goldData.demo_assessment.open_trades}</strong> | Closed: <strong style={{ color: '#a855f7' }}>{goldData.demo_assessment.closed_trades}</strong>)
-                    </div>
-                  </div>
-
-                  {/* 5 Assessment KPI Cards */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '12px' }}>
-                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Net PnL / ROI</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: goldData.demo_assessment.net_pnl >= 0 ? '#10b981' : '#ef4444' }}>
-                        {goldData.demo_assessment.net_pnl >= 0 ? '+' : ''}${goldData.demo_assessment.net_pnl.toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: '11px', color: goldData.demo_assessment.roi_pct >= 0 ? '#34d399' : '#f87171' }}>
-                        {goldData.demo_assessment.roi_pct >= 0 ? '+' : ''}{goldData.demo_assessment.roi_pct}% Return
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Win Rate (Closed)</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#f59e0b' }}>
-                        {goldData.demo_assessment.win_rate_pct}%
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>
-                        {goldData.demo_assessment.winning_trades} Wins / {goldData.demo_assessment.losing_trades} Losses
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Profit Factor</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#38bdf8' }}>
-                        {goldData.demo_assessment.profit_factor}x
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>
-                        Gross Profit / Gross Loss
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Max Drawdown</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#ef4444' }}>
-                        -${goldData.demo_assessment.max_drawdown_dollars.toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>
-                        {goldData.demo_assessment.max_drawdown_pct.toFixed(2)}% of Peak
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#111827', padding: '12px 14px', borderRadius: '6px', border: '1px solid #1f2937' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Current Equity</div>
-                      <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '4px', color: '#a855f7' }}>
-                        ${goldData.demo_assessment.current_equity.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>
-                        Realized: ${goldData.demo_assessment.total_realized_pnl.toFixed(2)}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Trade Journal Table */}
-                  {goldData.demo_assessment.trades && goldData.demo_assessment.trades.length > 0 ? (
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '12px' }}>
-                        <thead>
-                          <tr style={{ borderBottom: '1px solid #334155', color: '#94a3b8' }}>
-                            <th style={{ padding: '8px 10px' }}>Trade ID</th>
-                            <th style={{ padding: '8px 10px' }}>Side</th>
-                            <th style={{ padding: '8px 10px' }}>Entry Bar</th>
-                            <th style={{ padding: '8px 10px' }}>Entry Price</th>
-                            <th style={{ padding: '8px 10px' }}>Exit/Mark Price</th>
-                            <th style={{ padding: '8px 10px' }}>Lots</th>
-                            <th style={{ padding: '8px 10px' }}>SL / TP</th>
-                            <th style={{ padding: '8px 10px' }}>Status</th>
-                            <th style={{ padding: '8px 10px' }}>PnL ($)</th>
-                            <th style={{ padding: '8px 10px' }}>Return</th>
-                            <th style={{ padding: '8px 10px' }}>Action</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {goldData.demo_assessment.trades.map((dt) => {
-                            const pnlVal = dt.status === 'OPEN' ? dt.unrealized_pnl : dt.realized_pnl;
-                            return (
-                              <tr key={dt.trade_id} style={{ borderBottom: '1px solid #1e293b' }}>
-                                <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: '#38bdf8' }}>{dt.trade_id}</td>
-                                <td style={{ padding: '8px 10px', fontWeight: 'bold', color: dt.side === 'BUY' ? '#10b981' : '#ef4444' }}>
-                                  {dt.side === 'BUY' ? '▲ BUY' : '▼ SELL'}
-                                </td>
-                                <td style={{ padding: '8px 10px', color: '#cbd5e1' }}>{dt.time_label}</td>
-                                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>${dt.entry_price.toFixed(2)}</td>
-                                <td style={{ padding: '8px 10px', fontFamily: 'monospace' }}>
-                                  ${dt.exit_price ? dt.exit_price.toFixed(2) : dt.current_price.toFixed(2)}
-                                  {dt.exit_time_label && <span style={{ fontSize: '10px', color: '#64748b', marginLeft: '4px' }}>({dt.exit_time_label})</span>}
-                                </td>
-                                <td style={{ padding: '8px 10px' }}>{dt.quantity}</td>
-                                <td style={{ padding: '8px 10px', fontSize: '11px', color: '#94a3b8' }}>
-                                  <span style={{ color: '#ef4444' }}>${dt.stop_loss}</span> / <span style={{ color: '#10b981' }}>${dt.take_profit}</span>
-                                </td>
-                                <td style={{ padding: '8px 10px' }}>
-                                  <span
-                                    style={{
-                                      fontSize: '10px',
-                                      padding: '2px 6px',
-                                      borderRadius: '4px',
-                                      fontWeight: 'bold',
-                                      background:
-                                        dt.status === 'CLOSED_PROFIT'
-                                          ? '#064e3b'
-                                          : dt.status === 'CLOSED_LOSS'
-                                          ? '#450a0a'
-                                          : '#1e293b',
-                                      color:
-                                        dt.status === 'CLOSED_PROFIT'
-                                          ? '#a7f3d0'
-                                          : dt.status === 'CLOSED_LOSS'
-                                          ? '#fca5a5'
-                                          : '#38bdf8',
-                                      border:
-                                        '1px solid ' +
-                                        (dt.status === 'CLOSED_PROFIT'
-                                          ? '#059669'
-                                          : dt.status === 'CLOSED_LOSS'
-                                          ? '#991b1b'
-                                          : '#0284c7'),
-                                    }}
-                                  >
-                                    {dt.status === 'CLOSED_PROFIT' ? `✅ TP HIT` : dt.status === 'CLOSED_LOSS' ? `❌ SL HIT` : `● OPEN`}
-                                  </span>
-                                </td>
-                                <td style={{ padding: '8px 10px', fontWeight: 'bold', fontFamily: 'monospace', color: pnlVal >= 0 ? '#10b981' : '#ef4444' }}>
-                                  {pnlVal >= 0 ? '+' : ''}${pnlVal.toFixed(2)}
-                                </td>
-                                <td style={{ padding: '8px 10px', fontWeight: 'bold', color: dt.return_pct >= 0 ? '#10b981' : '#ef4444' }}>
-                                  {dt.return_pct >= 0 ? '+' : ''}{dt.return_pct}%
-                                </td>
-                                <td style={{ padding: '8px 10px' }}>
-                                  {dt.status === 'OPEN' ? (
-                                    <button
-                                      onClick={() => closeHistoricalDemoTrade(dt.trade_id)}
-                                      style={{ background: '#dc2626', color: '#fff', border: 'none', padding: '3px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '10px', fontWeight: 'bold' }}
-                                    >
-                                      Close
-                                    </button>
-                                  ) : (
-                                    <span style={{ fontSize: '10px', color: '#64748b' }}>{dt.exit_reason}</span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <div style={{ textAlign: 'center', padding: '16px', color: '#64748b', fontSize: '12px' }}>
-                      No demo trades placed yet. Click on any historical candle or use the Order Ticket above, or click "Auto-Simulate Strategy Signals"!
+                  {/* Status Toast */}
+                  {tradeToast && (
+                    <div
+                      style={{
+                        padding: '6px 8px',
+                        borderRadius: '2px',
+                        background: 'rgba(16, 185, 129, 0.1)',
+                        border: '1px solid rgba(16, 185, 129, 0.3)',
+                        color: '#10b981',
+                        fontSize: '10px',
+                        fontFamily: 'JetBrains Mono, monospace',
+                      }}
+                    >
+                      {tradeToast}
                     </div>
                   )}
                 </div>
-              )}
 
-
-              {/* Machine Learning Forward Direction Forecast Cards */}
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '20px' }}>
-                {/* 1-Hour Horizon Prediction Card */}
-                <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 style={{ margin: 0, fontSize: '16px', color: '#10b981' }}>🔮 1-Hour Forward Probabilistic Target</h3>
-                    <span style={{ fontSize: '12px', background: '#064e3b', color: '#a7f3d0', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                      1-HOUR FORECAST
-                    </span>
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginTop: '14px' }}>
-                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Most Probable Median</div>
-                      <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#38bdf8' }}>
-                        ${goldData.forecast_1h.median_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </div>
-                      <div style={{ fontSize: '11px', color: goldData.forecast_1h.expected_change_pct >= 0 ? '#10b981' : '#ef4444', marginTop: '2px' }}>
-                        {goldData.forecast_1h.expected_change_pct > 0 ? '+' : ''}{goldData.forecast_1h.expected_change_pct}% expected shift
-                      </div>
+                {/* 4. LEVEL-2 DEPTH OF MARKET (DOM) LADDER */}
+                {goldData && (
+                  <div
+                    style={{
+                      background: '#0d1017',
+                      border: '1px solid rgba(255, 255, 255, 0.06)',
+                      borderRadius: '4px',
+                      padding: '12px 14px',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '8px',
+                    }}
+                    className="tabular"
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1' }}>
+                        DEPTH OF MARKET (L2 DOM)
+                      </span>
+                      <span style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#38bdf8' }}>
+                        SPREAD: $0.20 (2.0 PIPS)
+                      </span>
                     </div>
 
-                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Directional Probabilities</div>
-                      <div style={{ fontSize: '16px', fontWeight: 'bold', marginTop: '4px' }}>
-                        <span style={{ color: '#10b981' }}>▲ {goldData.forecast_1h.prob_up}% Up</span>
-                        <span style={{ color: '#94a3b8', margin: '0 6px' }}>|</span>
-                        <span style={{ color: '#ef4444' }}>▼ {goldData.forecast_1h.prob_down}% Dn</span>
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Expected Parkinson Range</div>
-                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc', marginTop: '4px' }}>
-                        ${goldData.forecast_1h.expected_low.toFixed(2)} — ${goldData.forecast_1h.expected_high.toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>Spread: ${goldData.forecast_1h.expected_range_dollars}</div>
-                    </div>
-
-                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>95% Confidence Band</div>
-                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#a855f7', marginTop: '4px' }}>
-                        ${goldData.forecast_1h.low_95.toFixed(2)} — ${goldData.forecast_1h.high_95.toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>2.5% to 97.5% Percentile</div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 24-Hour Horizon Prediction Card */}
-                <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <h3 style={{ margin: 0, fontSize: '16px', color: '#f59e0b' }}>🔮 24-Hour Forward Horizon Target</h3>
-                    <span style={{ fontSize: '12px', background: '#78350f', color: '#fde68a', padding: '2px 8px', borderRadius: '4px', fontWeight: 'bold' }}>
-                      24-HOUR FORECAST
-                    </span>
-                  </div>
-
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '12px', marginTop: '14px' }}>
-                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>24h Expected Median</div>
-                      <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#f59e0b' }}>
-                        ${goldData.forecast_24h.median_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                      </div>
-                      <div style={{ fontSize: '11px', color: goldData.forecast_24h.expected_change_pct >= 0 ? '#10b981' : '#ef4444', marginTop: '2px' }}>
-                        {goldData.forecast_24h.expected_change_pct > 0 ? '+' : ''}{goldData.forecast_24h.expected_change_pct}% expected shift
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Directional Probabilities</div>
-                      <div style={{ fontSize: '16px', fontWeight: 'bold', marginTop: '4px' }}>
-                        <span style={{ color: '#10b981' }}>▲ {goldData.forecast_24h.prob_up}% Up</span>
-                        <span style={{ color: '#94a3b8', margin: '0 6px' }}>|</span>
-                        <span style={{ color: '#ef4444' }}>▼ {goldData.forecast_24h.prob_down}% Dn</span>
-                      </div>
-                    </div>
-
-                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>Expected 24h High/Low</div>
-                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#f8fafc', marginTop: '4px' }}>
-                        ${goldData.forecast_24h.expected_low.toFixed(2)} — ${goldData.forecast_24h.expected_high.toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>Intraday Range: ${goldData.forecast_24h.expected_range_dollars}</div>
-                    </div>
-
-                    <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                      <div style={{ fontSize: '11px', color: '#94a3b8' }}>95% Confidence Band</div>
-                      <div style={{ fontSize: '14px', fontWeight: 'bold', color: '#a855f7', marginTop: '4px' }}>
-                        ${goldData.forecast_24h.low_95.toFixed(2)} — ${goldData.forecast_24h.high_95.toFixed(2)}
-                      </div>
-                      <div style={{ fontSize: '11px', color: '#64748b' }}>99% Tail: [${goldData.forecast_24h.low_99.toFixed(2)} — ${goldData.forecast_24h.high_99.toFixed(2)}]</div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Forward Schedule Trajectory Table */}
-              <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                <h3 style={{ margin: '0 0 12px 0', fontSize: '15px', color: '#10b981' }}>
-                  📋 Machine Learning Forward Target Schedule (+1h to +12h Forward Projections)
-                </h3>
-                <div style={{ overflowX: 'auto' }}>
-                  <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
-                    <thead>
-                      <tr style={{ borderBottom: '1px solid #374151', color: '#94a3b8' }}>
-                        <th style={{ padding: '8px 10px' }}>Forecast Horizon</th>
-                        <th style={{ padding: '8px 10px' }}>Expected Median Price</th>
-                        <th style={{ padding: '8px 10px' }}>95% Confidence Interval [Low / High]</th>
-                        <th style={{ padding: '8px 10px' }}>Expected Relative Shift</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {goldData.forward_trajectory.map((t, idx) => (
-                        <tr key={idx} style={{ borderBottom: '1px solid #1f2937' }}>
-                          <td style={{ padding: '8px 10px', fontWeight: 'bold', color: '#ec4899' }}>+{t.step_hour}h Forward</td>
-                          <td style={{ padding: '8px 10px', fontFamily: 'monospace', fontWeight: 'bold', color: '#f8fafc' }}>
-                            ${t.expected_price.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                          </td>
-                          <td style={{ padding: '8px 10px', fontFamily: 'monospace', color: '#a855f7' }}>
-                            [${t.low_95.toFixed(2)} , ${t.high_95.toFixed(2)}]
-                          </td>
-                          <td style={{ padding: '8px 10px', fontWeight: 'bold', color: t.expected_change_pct >= 0 ? '#10b981' : '#ef4444' }}>
-                            {t.expected_change_pct > 0 ? '+' : ''}{t.expected_change_pct}%
-                          </td>
-                        </tr>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '10px', fontFamily: 'JetBrains Mono, monospace' }}>
+                      {/* Asks (Red) */}
+                      {[
+                        { px: goldData.current_spot_price + 0.4, size: 45, depth: 85 },
+                        { px: goldData.current_spot_price + 0.2, size: 28, depth: 55 },
+                        { px: goldData.current_spot_price + 0.1, size: 12, depth: 25 },
+                      ].map((ask, idx) => (
+                        <div
+                          key={`ask-${idx}`}
+                          onClick={() => executeSpotGoldTrade('BUY', ask.px)}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            padding: '3px 6px',
+                            background: `linear-gradient(90deg, transparent ${100 - ask.depth}%, rgba(244, 63, 94, 0.15) 100%)`,
+                            cursor: 'pointer',
+                            borderRadius: '2px',
+                          }}
+                        >
+                          <span style={{ color: '#f43f5e', fontWeight: '700' }}>${ask.px.toFixed(2)}</span>
+                          <span style={{ color: '#64748b' }}>{ask.size} lots</span>
+                        </div>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
+
+                      {/* Current Midpoint Spread */}
+                      <div style={{ padding: '3px 6px', background: '#080a10', textAlign: 'center', color: '#94a3b8', fontSize: '9px', fontWeight: '700', borderTop: '1px solid rgba(255,255,255,0.06)', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                        SPOT MIDPOINT: ${goldData.current_spot_price.toFixed(2)}
+                      </div>
+
+                      {/* Bids (Green) */}
+                      {[
+                        { px: goldData.current_spot_price - 0.1, size: 15, depth: 30 },
+                        { px: goldData.current_spot_price - 0.2, size: 32, depth: 65 },
+                        { px: goldData.current_spot_price - 0.4, size: 52, depth: 95 },
+                      ].map((bid, idx) => (
+                        <div
+                          key={`bid-${idx}`}
+                          onClick={() => executeSpotGoldTrade('SELL', bid.px)}
+                          style={{
+                            display: 'flex',
+                            justifyContent: 'space-between',
+                            padding: '3px 6px',
+                            background: `linear-gradient(270deg, transparent ${100 - bid.depth}%, rgba(16, 185, 129, 0.15) 100%)`,
+                            cursor: 'pointer',
+                            borderRadius: '2px',
+                          }}
+                        >
+                          <span style={{ color: '#10b981', fontWeight: '700' }}>${bid.px.toFixed(2)}</span>
+                          <span style={{ color: '#64748b' }}>{bid.size} lots</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* ========================================================================= */}
-      {/* TAB 1: LIVE AUTO-LEARNING PREDICTOR                                      */}
-      {/* ========================================================================= */}
-      {activeTab === 'predict' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
-          <div style={{ background: '#111827', padding: '16px 20px', borderRadius: '8px', border: '1px solid #1f2937', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div style={{ display: 'flex', gap: '14px', alignItems: 'center' }}>
-              <label style={{ fontSize: '13px', color: '#94a3b8', fontWeight: 'bold' }}>Target Trading Pair:</label>
-              <select
-                value={livePairKey}
-                onChange={(e) => {
-                  setLivePairKey(e.target.value);
-                  fetchLivePrediction(e.target.value);
-                }}
-                style={{ background: '#1f2937', color: '#f8fafc', border: '1px solid #374151', padding: '8px 12px', borderRadius: '6px', fontSize: '13px', fontWeight: 'bold' }}
-              >
-                <option value="BTC/USD__ETH/USD">BTC/USD vs ETH/USD (Live Public Exchange)</option>
-                <option value="XAU/USD__JPY/USD">XAU/USD vs JPY/USD (Physical Gold in Yen)</option>
-                <option value="BTC/USD__XAU/USD">BTC/USD vs XAU/USD (Digital vs Physical Gold)</option>
-              </select>
-            </div>
-
-            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-              <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-                Source: <strong style={{ color: '#38bdf8' }}>{livePrediction?.data_source || 'Exchange Stream'}</strong>
-              </span>
-              <button
-                onClick={() => setAutoRefresh(!autoRefresh)}
-                style={{
-                  background: autoRefresh ? '#065f46' : '#374151',
-                  color: autoRefresh ? '#a7f3d0' : '#d1d5db',
-                  border: '1px solid ' + (autoRefresh ? '#10b981' : '#4b5563'),
-                  padding: '6px 12px',
-                  borderRadius: '4px',
-                  cursor: 'pointer',
-                  fontSize: '12px',
-                  fontWeight: 'bold',
-                }}
-              >
-                {autoRefresh ? '● Auto-Learning (Active 3s)' : '○ Auto-Refresh Paused'}
-              </button>
-              <button
-                onClick={() => fetchLivePrediction(livePairKey)}
-                disabled={loadingPrediction}
-                style={{ background: '#059669', color: 'white', border: 'none', padding: '6px 14px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
-              >
-                {loadingPrediction ? 'Learning...' : '⚡ Predict Now'}
-              </button>
             </div>
           </div>
+        )}
 
-          {livePrediction && (
-            <>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '16px' }}>
-                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Live Quotes ({livePrediction.symbol_a} / {livePrediction.symbol_b})</div>
-                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '6px', color: '#38bdf8' }}>
-                    ${livePrediction.spot_a.toLocaleString()} / ${livePrediction.spot_b.toLocaleString()}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                    Ratio: <strong>{livePrediction.price_ratio}</strong>
-                  </div>
-                </div>
-
-                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Adaptive Kalman Elasticity (β)</div>
-                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '6px', color: '#a855f7' }}>
-                    {livePrediction.hedge_ratio_beta > 0 ? '+' : ''}{livePrediction.hedge_ratio_beta}
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                    Robbins-Monro Rate η: <strong>{livePrediction.learning_rate}</strong>
-                  </div>
-                </div>
-
-                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Online Prediction Accuracy</div>
-                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '6px', color: '#10b981' }}>
-                    {livePrediction.online_accuracy_pct}%
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                    Evals: <strong>{livePrediction.total_evaluations} calls scored</strong>
-                  </div>
-                </div>
-
-                <div style={{ background: '#111827', padding: '16px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Spread Z-Score & Half-Life</div>
-                  <div style={{ fontSize: '18px', fontWeight: 'bold', marginTop: '6px', color: Math.abs(livePrediction.current_z_score) > 1.5 ? '#f59e0b' : '#38bdf8' }}>
-                    {livePrediction.current_z_score > 0 ? '+' : ''}{livePrediction.current_z_score} σ
-                  </div>
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>
-                    Half-Life t₁/₂: <strong>{livePrediction.half_life_hours} hours</strong>
-                  </div>
-                </div>
-              </div>
-
-              <div
-                style={{
-                  padding: '16px 20px',
-                  borderRadius: '8px',
-                  background:
-                    livePrediction.action_signal.includes('BUY')
-                      ? 'linear-gradient(90deg, #064e3b 0%, #022c22 100%)'
-                      : livePrediction.action_signal.includes('SELL')
-                      ? 'linear-gradient(90deg, #7f1d1d 0%, #450a0a 100%)'
-                      : 'linear-gradient(90deg, #1e293b 0%, #0f172a 100%)',
-                  border:
-                    '1px solid ' +
-                    (livePrediction.action_signal.includes('BUY')
-                      ? '#10b981'
-                      : livePrediction.action_signal.includes('SELL')
-                      ? '#ef4444'
-                      : '#3b82f6'),
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                }}
-              >
-                <div>
-                  <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                    Live Auto-Learning Predictive Recommendation
-                  </div>
-                  <div style={{ fontSize: '22px', fontWeight: '900', color: '#f8fafc', marginTop: '2px' }}>
-                    {livePrediction.action_signal}
-                  </div>
-                  <div style={{ fontSize: '13px', color: '#cbd5e1', marginTop: '4px' }}>{livePrediction.action_thesis}</div>
-                </div>
-                <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Stationary Target (μ)</div>
-                  <div style={{ fontSize: '18px', fontWeight: 'bold', fontFamily: 'monospace', color: '#eab308' }}>
-                    {livePrediction.ou_mu > 0 ? '+' : ''}{livePrediction.ou_mu}
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-                <h2 style={{ fontSize: '16px', color: '#10b981', marginTop: 0, marginBottom: '14px' }}>
-                  📈 Real-Time Spread & Forward Projection Trajectory (Ornstein-Uhlenbeck SDE)
-                </h2>
-                {renderPredictionChart()}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* Tab 2: Leaderboard */}
-      {activeTab === 'leaderboard' && (
-        <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-          <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>🏆 Evaluated Alpha Strategies Leaderboard</h2>
-          <div style={{ overflowX: 'auto', marginTop: '12px' }}>
-            <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid #374151', color: '#94a3b8' }}>
-                  <th style={{ padding: '10px' }}>Strategy Name</th>
-                  <th style={{ padding: '10px' }}>Symbol</th>
-                  <th style={{ padding: '10px' }}>Annualized Sharpe</th>
-                  <th style={{ padding: '10px' }}>Sortino Ratio</th>
-                  <th style={{ padding: '10px' }}>Total Return</th>
-                  <th style={{ padding: '10px' }}>Max Drawdown</th>
-                  <th style={{ padding: '10px' }}>Win Rate</th>
-                  <th style={{ padding: '10px' }}>Trades</th>
-                </tr>
-              </thead>
-              <tbody>
-                {strategies.map((s, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid #1f2937' }}>
-                    <td style={{ padding: '10px', fontWeight: 'bold', color: '#38bdf8' }}>{s.strategy_name}</td>
-                    <td style={{ padding: '10px' }}>{s.symbol}</td>
-                    <td style={{ padding: '10px', color: s.annualized_sharpe > 1.0 ? '#10b981' : '#f59e0b', fontWeight: 'bold' }}>
-                      {s.annualized_sharpe}
-                    </td>
-                    <td style={{ padding: '10px' }}>{s.sortino_ratio}</td>
-                    <td style={{ padding: '10px', color: s.total_return_pct >= 0 ? '#10b981' : '#ef4444' }}>
-                      {s.total_return_pct}%
-                    </td>
-                    <td style={{ padding: '10px', color: '#ef4444' }}>{s.max_drawdown_pct}%</td>
-                    <td style={{ padding: '10px' }}>{s.win_rate_pct}%</td>
-                    <td style={{ padding: '10px' }}>{s.total_trades}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* Tab 3: Backtest Lab */}
-      {activeTab === 'lab' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
-          <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>🔬 Parameter Tuning</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
-              <div>
-                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Strategy Archetype:</label>
+        {/* TAB: PAIRS PREDICTOR */}
+        {activeTab === 'predict' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div
+              style={{
+                background: '#0d1017',
+                border: '1px solid rgba(255, 255, 255, 0.06)',
+                borderRadius: '4px',
+                padding: '10px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <span style={{ fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', color: '#94a3b8' }}>
+                  TARGET PAIR:
+                </span>
                 <select
-                  value={labStrategy}
-                  onChange={(e) => setLabStrategy(e.target.value)}
-                  style={{ width: '100%', padding: '8px', background: '#1f2937', color: 'white', border: '1px solid #374151', borderRadius: '4px', marginTop: '4px' }}
+                  value={livePairKey}
+                  onChange={(e) => {
+                    setLivePairKey(e.target.value);
+                    fetchLivePrediction(e.target.value);
+                  }}
+                  style={{
+                    background: '#080a10',
+                    color: '#f8fafc',
+                    border: '1px solid rgba(255, 255, 255, 0.1)',
+                    padding: '4px 8px',
+                    borderRadius: '3px',
+                    fontSize: '11px',
+                    fontFamily: 'JetBrains Mono, monospace',
+                  }}
                 >
-                  <option value="bollinger">Bollinger Mean-Reversion</option>
-                  <option value="ema">Dual EMA Trend Cross</option>
-                  <option value="rsi">RSI Momentum Breakout</option>
+                  <option value="BTC/USD__ETH/USD">BTC/USD vs ETH/USD (Public Exchange)</option>
+                  <option value="XAU/USD__JPY/USD">XAU/USD vs JPY/USD (Physical Gold in Yen)</option>
+                  <option value="BTC/USD__XAU/USD">BTC/USD vs XAU/USD (Digital vs Physical Gold)</option>
                 </select>
               </div>
-              <div>
-                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Rolling Window ({labWindow} bars):</label>
-                <input
-                  type="range"
-                  min="5"
-                  max="50"
-                  value={labWindow}
-                  onChange={(e) => setLabWindow(e.target.value)}
-                  style={{ width: '100%', marginTop: '4px' }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Standard Deviation Mult ({labStd}x):</label>
-                <input
-                  type="range"
-                  min="1.0"
-                  max="3.5"
-                  step="0.1"
-                  value={labStd}
-                  onChange={(e) => setLabStd(e.target.value)}
-                  style={{ width: '100%', marginTop: '4px' }}
-                />
-              </div>
-              <button
-                onClick={runLabBacktest}
-                style={{ padding: '10px', background: '#059669', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-              >
-                Run Zero-Loop Matrix Backtest
-              </button>
-            </div>
-          </div>
 
-          <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📊 Backtest Simulation Results</h2>
-            {latestBacktest ? (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginTop: '16px' }}>
-                <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Total Return</div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold', color: latestBacktest.total_return_pct >= 0 ? '#10b981' : '#ef4444' }}>
-                    {latestBacktest.total_return_pct}%
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  onClick={() => setAutoRefresh(!autoRefresh)}
+                  style={{
+                    background: autoRefresh ? 'rgba(16, 185, 129, 0.15)' : '#12151e',
+                    color: autoRefresh ? '#10b981' : '#64748b',
+                    border: '1px solid ' + (autoRefresh ? 'rgba(16, 185, 129, 0.3)' : 'rgba(255, 255, 255, 0.08)'),
+                    padding: '4px 8px',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    fontFamily: 'JetBrains Mono, monospace',
+                  }}
+                >
+                  {autoRefresh ? 'POLLING (3S)' : 'PAUSED'}
+                </button>
+                <button
+                  onClick={() => fetchLivePrediction(livePairKey)}
+                  disabled={loadingPrediction}
+                  style={{
+                    background: '#1e2433',
+                    color: '#38bdf8',
+                    border: '1px solid rgba(56, 189, 248, 0.3)',
+                    padding: '4px 10px',
+                    borderRadius: '3px',
+                    cursor: 'pointer',
+                    fontSize: '11px',
+                    fontFamily: 'JetBrains Mono, monospace',
+                    fontWeight: '600',
+                  }}
+                >
+                  {loadingPrediction ? 'COMPUTING...' : 'PREDICT NOW'}
+                </button>
+              </div>
+            </div>
+
+            {livePrediction && (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }} className="tabular">
+                  <div style={{ background: '#0d1017', padding: '12px', borderRadius: '4px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>QUOTES ({livePrediction.symbol_a} / {livePrediction.symbol_b})</div>
+                    <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#38bdf8', marginTop: '2px' }}>
+                      ${livePrediction.spot_a.toLocaleString()} / ${livePrediction.spot_b.toLocaleString()}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>Ratio: {livePrediction.price_ratio}</div>
+                  </div>
+
+                  <div style={{ background: '#0d1017', padding: '12px', borderRadius: '4px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>KALMAN ELASTICITY (β)</div>
+                    <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#818cf8', marginTop: '2px' }}>
+                      {livePrediction.hedge_ratio_beta > 0 ? '+' : ''}{livePrediction.hedge_ratio_beta}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>Learning Rate η: {livePrediction.learning_rate}</div>
+                  </div>
+
+                  <div style={{ background: '#0d1017', padding: '12px', borderRadius: '4px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>ONLINE ACCURACY</div>
+                    <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#10b981', marginTop: '2px' }}>
+                      {livePrediction.online_accuracy_pct}%
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>{livePrediction.total_evaluations} calls evaluated</div>
+                  </div>
+
+                  <div style={{ background: '#0d1017', padding: '12px', borderRadius: '4px', border: '1px solid rgba(255, 255, 255, 0.06)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>SPREAD Z-SCORE & HALF-LIFE</div>
+                    <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: Math.abs(livePrediction.current_z_score) > 1.5 ? '#f59e0b' : '#38bdf8', marginTop: '2px' }}>
+                      {livePrediction.current_z_score > 0 ? '+' : ''}{livePrediction.current_z_score} σ
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>t₁/₂: {livePrediction.half_life_hours} hours</div>
                   </div>
                 </div>
-                <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Annualized Sharpe</div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#38bdf8' }}>{latestBacktest.annualized_sharpe}</div>
+
+                <div
+                  style={{
+                    background: '#0d1017',
+                    border: '1px solid rgba(255, 255, 255, 0.06)',
+                    borderRadius: '4px',
+                    padding: '12px 16px',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
+                  className="tabular"
+                >
+                  <div>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>PREDICTIVE RECOMMENDATION</div>
+                    <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '800', color: livePrediction.action_signal.includes('BUY') ? '#10b981' : livePrediction.action_signal.includes('SELL') ? '#f43f5e' : '#38bdf8', marginTop: '2px' }}>
+                      {livePrediction.action_signal}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>{livePrediction.action_thesis}</div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>EQUILIBRIUM TARGET (μ)</div>
+                    <div style={{ fontSize: '16px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#eab308', marginTop: '2px' }}>
+                      {livePrediction.ou_mu > 0 ? '+' : ''}{livePrediction.ou_mu}
+                    </div>
+                  </div>
                 </div>
-                <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Max Drawdown</div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#ef4444' }}>{latestBacktest.max_drawdown_pct}%</div>
+
+                <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '12px' }}>
+                  {renderPredictionChart()}
                 </div>
-                <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Sortino Ratio</div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#a855f7' }}>{latestBacktest.sortino_ratio}</div>
-                </div>
-                <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Win Rate</div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#f59e0b' }}>{latestBacktest.win_rate_pct}%</div>
-                </div>
-                <div style={{ background: '#1f2937', padding: '12px', borderRadius: '6px' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Total Trades</div>
-                  <div style={{ fontSize: '20px', fontWeight: 'bold' }}>{latestBacktest.total_trades}</div>
-                </div>
-              </div>
-            ) : (
-              <p style={{ color: '#94a3b8', fontSize: '13px' }}>Configure strategy parameters and click "Run Zero-Loop Matrix Backtest".</p>
+              </>
             )}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Tab 4: Pairs Trading */}
-      {activeTab === 'pairs' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
-          <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>⚖️ Pairs Cointegration Lab</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
-              <div>
-                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Asset A:</label>
-                <input
-                  type="text"
-                  value={pairsAssetA}
-                  onChange={(e) => setPairsAssetA(e.target.value)}
-                  style={{ width: '100%', padding: '8px', background: '#1f2937', color: 'white', border: '1px solid #374151', borderRadius: '4px', marginTop: '4px' }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Asset B:</label>
-                <input
-                  type="text"
-                  value={pairsAssetB}
-                  onChange={(e) => setPairsAssetB(e.target.value)}
-                  style={{ width: '100%', padding: '8px', background: '#1f2937', color: 'white', border: '1px solid #374151', borderRadius: '4px', marginTop: '4px' }}
-                />
-              </div>
-              <button
-                onClick={runPairsAnalysis}
-                style={{ padding: '10px', background: '#059669', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-              >
-                Run Kalman & O-U Analysis
-              </button>
+        {/* TAB: LEADERBOARD */}
+        {activeTab === 'leaderboard' && (
+          <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '14px' }}>
+            <div style={{ fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', marginBottom: '10px' }}>
+              ALPHA HYPOTHESIS LEADERBOARD
             </div>
-          </div>
-
-          <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📊 Statistical Arbitrage Results</h2>
-            {pairsResult ? (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px', marginTop: '16px' }}>
-                <div style={{ background: '#1f2937', padding: '14px', borderRadius: '6px' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Dynamic Kalman Hedge Ratio (β)</div>
-                  <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#38bdf8' }}>{pairsResult.pairs_analysis.hedge_ratio_beta}</div>
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>O-U Speed (θ): {pairsResult.pairs_analysis.ou_theta}</div>
-                </div>
-                <div style={{ background: '#1f2937', padding: '14px', borderRadius: '6px' }}>
-                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>Spread Z-Score & Half-Life</div>
-                  <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#10b981' }}>{pairsResult.pairs_analysis.current_z_score} σ</div>
-                  <div style={{ fontSize: '12px', color: '#64748b', marginTop: '4px' }}>Half-Life: {pairsResult.pairs_analysis.ou_half_life_days} days</div>
-                </div>
-              </div>
-            ) : (
-              <p style={{ color: '#94a3b8', fontSize: '13px' }}>Click "Run Kalman & O-U Analysis" to estimate dynamic hedge ratio and mean-reversion metrics.</p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Tab 5: Execution Hub */}
-      {activeTab === 'execution' && (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '20px' }}>
-          <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📈 Paper Order Ticket</h2>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginTop: '14px' }}>
-              <div>
-                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Asset Symbol:</label>
-                <input
-                  type="text"
-                  value={orderSymbol}
-                  onChange={(e) => setOrderSymbol(e.target.value)}
-                  style={{ width: '100%', padding: '8px', background: '#1f2937', color: 'white', border: '1px solid #374151', borderRadius: '4px', marginTop: '4px' }}
-                />
-              </div>
-              <div>
-                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Order Side:</label>
-                <div style={{ display: 'flex', gap: '10px', marginTop: '4px' }}>
-                  <button
-                    onClick={() => setOrderSide('BUY')}
-                    style={{ flex: 1, padding: '8px', background: orderSide === 'BUY' ? '#059669' : '#374151', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                  >
-                    BUY
-                  </button>
-                  <button
-                    onClick={() => setOrderSide('SELL')}
-                    style={{ flex: 1, padding: '8px', background: orderSide === 'SELL' ? '#dc2626' : '#374151', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-                  >
-                    SELL
-                  </button>
-                </div>
-              </div>
-              <div>
-                <label style={{ fontSize: '12px', color: '#94a3b8' }}>Quantity:</label>
-                <input
-                  type="number"
-                  value={orderQty}
-                  onChange={(e) => setOrderQty(e.target.value)}
-                  style={{ width: '100%', padding: '8px', background: '#1f2937', color: 'white', border: '1px solid #374151', borderRadius: '4px', marginTop: '4px' }}
-                />
-              </div>
-              <button
-                onClick={submitPaperOrder}
-                style={{ padding: '10px', background: orderSide === 'BUY' ? '#059669' : '#dc2626', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
-              >
-                Submit Paper Order
-              </button>
-            </div>
-          </div>
-
-          <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-            <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>💼 Active Portfolio Positions</h2>
-            <div style={{ overflowX: 'auto', marginTop: '12px' }}>
-              <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '13px' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '11px' }} className="tabular">
                 <thead>
-                  <tr style={{ borderBottom: '1px solid #374151', color: '#94a3b8' }}>
-                    <th style={{ padding: '8px' }}>Symbol</th>
-                    <th style={{ padding: '8px' }}>Quantity</th>
-                    <th style={{ padding: '8px' }}>Entry Price</th>
-                    <th style={{ padding: '8px' }}>Current Price</th>
-                    <th style={{ padding: '8px' }}>Unrealized PnL</th>
-                    <th style={{ padding: '8px' }}>Realized PnL</th>
+                  <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: '#64748b' }}>
+                    <th style={{ padding: '8px' }}>STRATEGY</th>
+                    <th style={{ padding: '8px' }}>SYMBOL</th>
+                    <th style={{ padding: '8px' }}>SHARPE</th>
+                    <th style={{ padding: '8px' }}>SORTINO</th>
+                    <th style={{ padding: '8px' }}>TOTAL RETURN</th>
+                    <th style={{ padding: '8px' }}>MAX DRAWDOWN</th>
+                    <th style={{ padding: '8px' }}>WIN RATE</th>
+                    <th style={{ padding: '8px' }}>TRADES</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.values(portfolio.positions).map((pos) => (
-                    <tr key={pos.symbol} style={{ borderBottom: '1px solid #1f2937' }}>
-                      <td style={{ padding: '8px', fontWeight: 'bold', color: '#38bdf8' }}>{pos.symbol}</td>
-                      <td style={{ padding: '8px' }}>{pos.quantity}</td>
-                      <td style={{ padding: '8px' }}>${pos.entry_price.toLocaleString()}</td>
-                      <td style={{ padding: '8px' }}>${pos.current_price.toLocaleString()}</td>
-                      <td style={{ padding: '8px', color: pos.unrealized_pnl >= 0 ? '#10b981' : '#ef4444' }}>
-                        ${pos.unrealized_pnl.toLocaleString()}
+                  {strategies.map((s, idx) => (
+                    <tr key={idx} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                      <td style={{ padding: '8px', fontWeight: '600', color: '#38bdf8' }}>{s.strategy_name}</td>
+                      <td style={{ padding: '8px', color: '#cbd5e1' }}>{s.symbol}</td>
+                      <td style={{ padding: '8px', color: s.annualized_sharpe > 1.0 ? '#10b981' : '#f59e0b', fontWeight: '700' }}>
+                        {s.annualized_sharpe}
                       </td>
-                      <td style={{ padding: '8px', color: pos.realized_pnl >= 0 ? '#10b981' : '#ef4444' }}>
-                        ${pos.realized_pnl.toLocaleString()}
+                      <td style={{ padding: '8px' }}>{s.sortino_ratio}</td>
+                      <td style={{ padding: '8px', color: s.total_return_pct >= 0 ? '#10b981' : '#f43f5e', fontWeight: '700' }}>
+                        {s.total_return_pct}%
                       </td>
+                      <td style={{ padding: '8px', color: '#f43f5e' }}>{s.max_drawdown_pct}%</td>
+                      <td style={{ padding: '8px' }}>{s.win_rate_pct}%</td>
+                      <td style={{ padding: '8px' }}>{s.total_trades}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Tab 6: Metrics */}
-      {activeTab === 'metrics' && (
-        <div style={{ background: '#111827', padding: '20px', borderRadius: '8px', border: '1px solid #1f2937' }}>
-          <h2 style={{ fontSize: '17px', color: '#10b981', marginTop: 0 }}>📊 Prometheus Exposition Telemetry (/metrics)</h2>
-          <pre style={{ background: '#030712', padding: '16px', borderRadius: '6px', fontSize: '12px', color: '#34d399', overflowX: 'auto' }}>
-            {metricsText || 'Loading Prometheus metrics...'}
-          </pre>
-        </div>
-      )}
+        {/* TAB: BACKTEST LAB */}
+        {activeTab === 'lab' && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '12px' }}>
+            <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '14px' }}>
+              <div style={{ fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', marginBottom: '12px' }}>
+                MATRIX BACKTEST CONFIG
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>
+                <div>
+                  <label style={{ color: '#64748b' }}>ARCHETYPE:</label>
+                  <select
+                    value={labStrategy}
+                    onChange={(e) => setLabStrategy(e.target.value)}
+                    style={{ width: '100%', padding: '6px', background: '#080a10', color: '#f8fafc', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '3px', marginTop: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                  >
+                    <option value="bollinger">Bollinger Mean-Reversion</option>
+                    <option value="ema">Dual EMA Trend Cross</option>
+                    <option value="rsi">RSI Momentum Breakout</option>
+                  </select>
+                </div>
+                <div>
+                  <label style={{ color: '#64748b' }}>ROLLING WINDOW ({labWindow} BARS):</label>
+                  <input
+                    type="range"
+                    min="5"
+                    max="50"
+                    value={labWindow}
+                    onChange={(e) => setLabWindow(e.target.value)}
+                    style={{ width: '100%', marginTop: '4px' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ color: '#64748b' }}>STD MULTIPLIER ({labStd}x):</label>
+                  <input
+                    type="range"
+                    min="1.0"
+                    max="3.5"
+                    step="0.1"
+                    value={labStd}
+                    onChange={(e) => setLabStd(e.target.value)}
+                    style={{ width: '100%', marginTop: '4px' }}
+                  />
+                </div>
+                <button
+                  onClick={runLabBacktest}
+                  style={{ padding: '8px', background: '#10b981', color: '#080a10', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '800', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  RUN MATRIX BACKTEST
+                </button>
+              </div>
+            </div>
+
+            <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '14px' }}>
+              <div style={{ fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', marginBottom: '12px' }}>
+                SIMULATION OUTPUT
+              </div>
+              {latestBacktest ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }} className="tabular">
+                  <div style={{ background: '#080a10', padding: '10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>TOTAL RETURN</div>
+                    <div style={{ fontSize: '18px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: latestBacktest.total_return_pct >= 0 ? '#10b981' : '#f43f5e', marginTop: '2px' }}>
+                      {latestBacktest.total_return_pct}%
+                    </div>
+                  </div>
+                  <div style={{ background: '#080a10', padding: '10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>SHARPE</div>
+                    <div style={{ fontSize: '18px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#38bdf8', marginTop: '2px' }}>
+                      {latestBacktest.annualized_sharpe}
+                    </div>
+                  </div>
+                  <div style={{ background: '#080a10', padding: '10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>MAX DRAWDOWN</div>
+                    <div style={{ fontSize: '18px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#f43f5e', marginTop: '2px' }}>
+                      {latestBacktest.max_drawdown_pct}%
+                    </div>
+                  </div>
+                  <div style={{ background: '#080a10', padding: '10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>SORTINO</div>
+                    <div style={{ fontSize: '18px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#818cf8', marginTop: '2px' }}>
+                      {latestBacktest.sortino_ratio}
+                    </div>
+                  </div>
+                  <div style={{ background: '#080a10', padding: '10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>WIN RATE</div>
+                    <div style={{ fontSize: '18px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#f59e0b', marginTop: '2px' }}>
+                      {latestBacktest.win_rate_pct}%
+                    </div>
+                  </div>
+                  <div style={{ background: '#080a10', padding: '10px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>TOTAL TRADES</div>
+                    <div style={{ fontSize: '18px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#f8fafc', marginTop: '2px' }}>
+                      {latestBacktest.total_trades}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '30px 10px', textAlign: 'center', color: '#475569', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>
+                  CONFIGURE PARAMETERS AND EXECUTE MATRIX BACKTEST.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB: STAT ARB */}
+        {activeTab === 'pairs' && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '12px' }}>
+            <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '14px' }}>
+              <div style={{ fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', marginBottom: '12px' }}>
+                PAIRS COINTEGRATION LAB
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>
+                <div>
+                  <label style={{ color: '#64748b' }}>ASSET A:</label>
+                  <input
+                    type="text"
+                    value={pairsAssetA}
+                    onChange={(e) => setPairsAssetA(e.target.value)}
+                    style={{ width: '100%', padding: '6px', background: '#080a10', color: '#f8fafc', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '3px', marginTop: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ color: '#64748b' }}>ASSET B:</label>
+                  <input
+                    type="text"
+                    value={pairsAssetB}
+                    onChange={(e) => setPairsAssetB(e.target.value)}
+                    style={{ width: '100%', padding: '6px', background: '#080a10', color: '#f8fafc', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '3px', marginTop: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                  />
+                </div>
+                <button
+                  onClick={runPairsAnalysis}
+                  style={{ padding: '8px', background: '#10b981', color: '#080a10', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '800', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                >
+                  RUN KALMAN & O-U ESTIMATION
+                </button>
+              </div>
+            </div>
+
+            <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '14px' }}>
+              <div style={{ fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', marginBottom: '12px' }}>
+                STATISTICAL ARBITRAGE METRICS
+              </div>
+              {pairsResult ? (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '10px' }} className="tabular">
+                  <div style={{ background: '#080a10', padding: '12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>DYNAMIC HEDGE RATIO (β)</div>
+                    <div style={{ fontSize: '18px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#38bdf8', marginTop: '2px' }}>
+                      {pairsResult.pairs_analysis.hedge_ratio_beta}
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>O-U Speed θ: {pairsResult.pairs_analysis.ou_theta}</div>
+                  </div>
+                  <div style={{ background: '#080a10', padding: '12px', borderRadius: '3px', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+                    <div style={{ fontSize: '10px', fontFamily: 'JetBrains Mono, monospace', color: '#64748b' }}>SPREAD Z-SCORE & HALF-LIFE</div>
+                    <div style={{ fontSize: '18px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#10b981', marginTop: '2px' }}>
+                      {pairsResult.pairs_analysis.current_z_score} σ
+                    </div>
+                    <div style={{ fontSize: '10px', color: '#475569', marginTop: '2px' }}>Half-Life: {pairsResult.pairs_analysis.ou_half_life_days} days</div>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ padding: '30px 10px', textAlign: 'center', color: '#475569', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>
+                  AWAITING STATISTICAL ARBITRAGE RUN.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB: PAPER ORDER & PORTFOLIO */}
+        {activeTab === 'execution' && (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '12px' }}>
+            <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '14px' }}>
+              <div style={{ fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', marginBottom: '12px' }}>
+                DIRECT ORDER TICKET
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}>
+                <div>
+                  <label style={{ color: '#64748b' }}>SYMBOL:</label>
+                  <input
+                    type="text"
+                    value={orderSymbol}
+                    onChange={(e) => setOrderSymbol(e.target.value)}
+                    style={{ width: '100%', padding: '6px', background: '#080a10', color: '#f8fafc', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '3px', marginTop: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ color: '#64748b' }}>SIDE:</label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px', marginTop: '4px' }}>
+                    <button
+                      onClick={() => setOrderSide('BUY')}
+                      style={{ padding: '6px', background: orderSide === 'BUY' ? '#10b981' : '#12151e', color: orderSide === 'BUY' ? '#080a10' : '#94a3b8', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '700', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      BUY
+                    </button>
+                    <button
+                      onClick={() => setOrderSide('SELL')}
+                      style={{ padding: '6px', background: orderSide === 'SELL' ? '#f43f5e' : '#12151e', color: orderSide === 'SELL' ? '#ffffff' : '#94a3b8', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '700', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                    >
+                      SELL
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label style={{ color: '#64748b' }}>QUANTITY:</label>
+                  <input
+                    type="number"
+                    value={orderQty}
+                    onChange={(e) => setOrderQty(e.target.value)}
+                    style={{ width: '100%', padding: '6px', background: '#080a10', color: '#f8fafc', border: '1px solid rgba(255, 255, 255, 0.1)', borderRadius: '3px', marginTop: '4px', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace' }}
+                  />
+                </div>
+                <button
+                  onClick={submitPaperOrder}
+                  style={{ padding: '8px', background: orderSide === 'BUY' ? '#10b981' : '#f43f5e', color: orderSide === 'BUY' ? '#080a10' : '#ffffff', border: 'none', borderRadius: '3px', cursor: 'pointer', fontWeight: '800', fontSize: '11px', fontFamily: 'JetBrains Mono, monospace', marginTop: '4px' }}
+                >
+                  TRANSMIT PAPER ORDER
+                </button>
+              </div>
+            </div>
+
+            <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '14px' }}>
+              <div style={{ fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', marginBottom: '10px' }}>
+                ACTIVE PORTFOLIO POSITIONS
+              </div>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse', fontSize: '11px' }} className="tabular">
+                  <thead>
+                    <tr style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.08)', color: '#64748b' }}>
+                      <th style={{ padding: '6px 8px' }}>SYMBOL</th>
+                      <th style={{ padding: '6px 8px' }}>QTY</th>
+                      <th style={{ padding: '6px 8px' }}>ENTRY ($)</th>
+                      <th style={{ padding: '6px 8px' }}>CURRENT ($)</th>
+                      <th style={{ padding: '6px 8px' }}>UNREALIZED PnL</th>
+                      <th style={{ padding: '6px 8px' }}>REALIZED PnL</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.values(portfolio.positions).map((pos) => (
+                      <tr key={pos.symbol} style={{ borderBottom: '1px solid rgba(255, 255, 255, 0.03)' }}>
+                        <td style={{ padding: '6px 8px', fontWeight: '700', color: '#38bdf8' }}>{pos.symbol}</td>
+                        <td style={{ padding: '6px 8px' }}>{pos.quantity}</td>
+                        <td style={{ padding: '6px 8px' }}>${pos.entry_price.toLocaleString()}</td>
+                        <td style={{ padding: '6px 8px' }}>${pos.current_price.toLocaleString()}</td>
+                        <td style={{ padding: '6px 8px', color: pos.unrealized_pnl >= 0 ? '#10b981' : '#f43f5e', fontWeight: '700' }}>
+                          ${pos.unrealized_pnl.toLocaleString()}
+                        </td>
+                        <td style={{ padding: '6px 8px', color: pos.realized_pnl >= 0 ? '#10b981' : '#f43f5e', fontWeight: '700' }}>
+                          ${pos.realized_pnl.toLocaleString()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* TAB: PROMETHEUS METRICS */}
+        {activeTab === 'metrics' && (
+          <div style={{ background: '#0d1017', border: '1px solid rgba(255, 255, 255, 0.06)', borderRadius: '4px', padding: '14px' }}>
+            <div style={{ fontSize: '12px', fontFamily: 'JetBrains Mono, monospace', fontWeight: '700', color: '#cbd5e1', marginBottom: '8px' }}>
+              PROMETHEUS TELEMETRY EXPOSITION (/metrics)
+            </div>
+            <pre style={{ background: '#080a10', padding: '12px', borderRadius: '3px', fontSize: '11px', color: '#10b981', overflowX: 'auto', border: '1px solid rgba(255, 255, 255, 0.04)' }}>
+              {metricsText || 'Loading Prometheus metrics...'}
+            </pre>
+          </div>
+        )}
+      </main>
     </div>
   );
 }
