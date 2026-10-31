@@ -1,5 +1,9 @@
 """Unit tests for Dedicated Spot Gold (XAU/USD) Analyzer and API endpoint."""
 
+import os
+import json
+import time
+from unittest.mock import patch, MagicMock
 import pytest
 from starlette.testclient import TestClient
 
@@ -303,4 +307,149 @@ def test_spot_gold_live_feed_integration():
     assert "Oct" in res.candles[-1].time_label or ":" in res.candles[-1].time_label
     assert res.chart_previous_close > 0.0
     assert res.daily_change_pct != 0.0
+
+
+def test_feed_cache_ttl_and_resilience():
+    """Verify that in-memory feed caching obeys the 12s TTL and gracefully falls back on network errors."""
+    analyzer = SpotGoldAnalyzer()
+
+    # First fetch: populates cache
+    t0 = time.time()
+    feed1 = analyzer.fetch_real_gold_feed(timeframe="1h", n_bars=30)
+    dur1 = time.time() - t0
+
+    # Second fetch within 12s: must return cached reference instantaneously (<10ms)
+    t1 = time.time()
+    feed2 = analyzer.fetch_real_gold_feed(timeframe="1h", n_bars=30)
+    dur2 = time.time() - t1
+
+    assert feed1 is feed2  # Must be identical cached reference in memory
+    assert dur2 < 0.05     # Sub-50ms execution from cache
+    assert len(feed2["bars"]) == 30
+
+    # Test network failure fallback: simulate network failure using patched urllib
+    with patch("urllib.request.urlopen", side_effect=Exception("Simulated socket timeout")):
+        # Clear cache key to force fetch attempt
+        analyzer._feed_cache.clear()
+        fallback_feed = analyzer.fetch_real_gold_feed(timeframe="1h", n_bars=30)
+        assert fallback_feed is not None
+        assert fallback_feed["data_source"].startswith("LIVE_CACHED")
+        assert len(fallback_feed["bars"]) == 30
+        assert fallback_feed["current_spot_price"] > 0.0
+
+
+def test_timeframe_resolutions():
+    """Verify multi-timeframe resolution fetching (15m, 1h, 4h, 1D)."""
+    analyzer = SpotGoldAnalyzer()
+    for tf in ["15m", "1h", "4h", "1D"]:
+        res = analyzer.analyze(timeframe=tf)
+        assert res.symbol == "XAU/USD"
+        assert res.timeframe == tf
+        assert len(res.candles) > 0
+        assert res.current_spot_price > 0.0
+        # Check candle validity
+        latest = res.candles[-1]
+        assert latest.high >= latest.low
+        assert latest.open > 0.0
+        assert latest.close > 0.0
+
+
+def test_1000_trades_mathematical_integrity():
+    """Verify full mathematical consistency and attribution of the 1,000 trades audit ledger."""
+    audit_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "analytics", "data", "gold_1000_trades.json")
+    assert os.path.exists(audit_file)
+
+    with open(audit_file, "r") as f:
+        data = json.load(f)
+
+    summary = data["summary"]
+    trades = data["confluence_1000_trades"]
+
+    assert len(trades) == 1000
+    assert summary["total_trades"] == 1000
+
+    calc_wins = 0
+    calc_losses = 0
+    calc_gross_profit = 0.0
+    calc_gross_loss = 0.0
+    running_eq = summary["initial_equity"]
+
+    for idx, t in enumerate(trades):
+        assert t["trade_num"] == idx + 1
+        assert t["side"] in ["BUY", "SELL"]
+        assert t["entry_px"] > 0.0
+        assert t["exit_px"] > 0.0
+        assert t["exit_reason"] in ["TAKE_PROFIT", "STOP_LOSS", "TIME_EXPIRY"]
+
+        pnl = t["pnl"]
+        if pnl > 0:
+            calc_wins += 1
+            calc_gross_profit += pnl
+        else:
+            calc_losses += 1
+            calc_gross_loss += abs(pnl)
+
+        running_eq = round(running_eq + pnl, 2)
+        assert abs(t["running_equity"] - running_eq) < 0.05
+
+    assert calc_wins == summary["wins"]
+    assert calc_losses == summary["losses"]
+    assert round(calc_gross_profit, 2) == summary["gross_profit"]
+    assert round(calc_gross_loss, 2) == summary["gross_loss"]
+    assert round(calc_gross_profit - calc_gross_loss, 2) == summary["net_pnl"]
+
+    # Monthly breakdown integrity
+    monthly = summary["monthly_breakdown"]
+    assert len(monthly) == 3
+    sum_monthly_trades = sum(m["trades"] for m in monthly)
+    sum_monthly_pnl = round(sum(m["net_pnl"] for m in monthly), 2)
+    assert sum_monthly_trades == 1000
+    assert sum_monthly_pnl == summary["net_pnl"]
+
+
+def test_micro_account_liquidation_math():
+    """Verify mathematical margin allocation, liquidation cushion, and leverage invariants."""
+    analyzer = SpotGoldAnalyzer()
+    res = analyzer.analyze(account_capital=100.0, leverage=200.0)
+
+    # 0.01 lot = 1.0 troy ounce
+    assert res.recommended_lot_size == 0.01
+    contract_ounces = 0.01 * 100.0
+    assert contract_ounces == 1.0
+
+    # Margin check
+    expected_margin = round((contract_ounces * res.current_spot_price) / 200.0, 2)
+    assert abs(res.margin_required - expected_margin) < 0.05
+
+    # Free margin buffer
+    expected_free_margin = round(100.0 - expected_margin, 2)
+    assert abs(res.free_margin - expected_free_margin) < 0.05
+
+    # Margin level percentage
+    expected_margin_level = round((100.0 / expected_margin) * 100.0, 1)
+    assert abs(res.margin_level_pct - expected_margin_level) < 0.2
+    assert res.margin_level_pct > 400.0  # Safe above liquidation
+
+    # Liquidation distance in dollars
+    expected_distance = round(expected_free_margin / contract_ounces, 2)
+    assert abs(res.liquidation_price_distance - expected_distance) < 0.05
+    assert res.liquidation_price_distance > 70.0  # Buffer survives $70+ adverse move
+
+
+def test_api_error_handling_and_validation():
+    """Verify boundary conditions and error status codes on the API endpoints."""
+    client = TestClient(app)
+
+    # Nonexistent demo trade close should return 404
+    res_close_err = client.post("/api/v1/gold/demo-close", json={"trade_id": "nonexistent_trade_999"})
+    assert res_close_err.status_code == 404
+
+    # Missing trade_id returns 400
+    res_close_bad = client.post("/api/v1/gold/demo-close", json={})
+    assert res_close_bad.status_code == 400
+
+    # 1000-trades audit returns 200 with proper content type
+    res_audit_1000 = client.get("/api/v1/gold/1000-trades-audit")
+    assert res_audit_1000.status_code == 200
+    assert "confluence_1000_trades" in res_audit_1000.json()
 
